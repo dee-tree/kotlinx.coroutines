@@ -27,8 +27,8 @@ class BroadcastChannelFactoryTest : TestBase() {
 
     @Test
     fun testArrayBroadcastChannel() {
-        assertTrue { BroadcastChannel<Int>(1) is BufferedBroadcastChannel }
-        assertTrue { BroadcastChannel<Int>(10) is BufferedBroadcastChannel }
+        assertTrue { BroadcastChannel<Int>(1) is BroadcastChannelImpl }
+        assertTrue { BroadcastChannel<Int>(10) is BroadcastChannelImpl }
     }
 
     @Test

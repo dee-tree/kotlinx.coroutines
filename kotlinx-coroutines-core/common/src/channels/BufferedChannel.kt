@@ -104,7 +104,7 @@ internal open class BufferedChannel<E>(
         )
     }
     private fun onClosedTrySend(): ChannelResult<Unit> {
-        return closed(sendException(getCause()))
+        return closed(sendException(getCloseCause()))
     }
 
     private class SenderBroadcast(val cont: CancellableContinuation<Boolean>) : Waiter
@@ -140,7 +140,7 @@ internal open class BufferedChannel<E>(
     )
     private fun onClosedSend(element: E, coroutineContext: CoroutineContext) {
         onUndeliveredElement?.callUndeliveredElement(element, coroutineContext)
-        throw recoverStackTrace(sendException(getCause()))
+        throw recoverStackTrace(sendException(getCloseCause()))
     }
 
     private suspend fun sendOnNoWaiterSuspend(
@@ -183,7 +183,7 @@ internal open class BufferedChannel<E>(
     }
     private fun onClosedSendOnNoWaiterSuspend(element: E, cont: CancellableContinuation<Unit>) {
         onUndeliveredElement?.callUndeliveredElement(element, cont.context)
-        cont.resumeWithException(recoverStackTrace(sendException(getCause()), cont))
+        cont.resumeWithException(recoverStackTrace(sendException(getCloseCause()), cont))
     }
 
     /**
@@ -488,7 +488,7 @@ internal open class BufferedChannel<E>(
         }
     )
     private fun onClosedReceive(): E =
-        throw recoverStackTrace(receiveException(getCause())).also { onReceiveSynchronizationCompletion() }
+        throw recoverStackTrace(receiveException(getCloseCause())).also { onReceiveSynchronizationCompletion() }
 
     private suspend fun receiveOnNoWaiterSuspend(
         segm: ChannelSegment<E>,
@@ -514,7 +514,7 @@ internal open class BufferedChannel<E>(
             },
             onClosed = {
                 onReceiveSynchronizationCompletion()
-                cont.resumeWithException(receiveException(getCause()))
+                cont.resumeWithException(receiveException(getCloseCause()))
             },
         )
     }
@@ -528,7 +528,7 @@ internal open class BufferedChannel<E>(
     )
 
     private fun onClosedReceiveCatching(): ChannelResult<E> =
-        closed<E>(getCause()).also { onReceiveSynchronizationCompletion() }
+        closed<E>(getCloseCause()).also { onReceiveSynchronizationCompletion() }
 
     private suspend fun receiveCatchingOnNoWaiterSuspend(
         segm: ChannelSegment<E>,
@@ -555,7 +555,7 @@ internal open class BufferedChannel<E>(
             },
             onClosed = {
                 onReceiveSynchronizationCompletion()
-                cont.resume(closed(getCause()))
+                cont.resume(closed(getCloseCause()))
             },
         )
     }
@@ -581,7 +581,7 @@ internal open class BufferedChannel<E>(
     }
 
     private fun onClosedTryReceive(): ChannelResult<E> =
-        closed(getCause())
+        closed(getCloseCause())
 
     private inline fun <R> receiveImpl(
         waiter: Any?,
@@ -951,16 +951,16 @@ internal open class BufferedChannel<E>(
     protected open fun onReceiveSynchronizationCompletion() {}
 
     internal fun processResultSelectSend(ignoredParam: Any?, selectResult: Any?): Any? =
-        if (selectResult === CHANNEL_CLOSED) throw sendException(getCause())
+        if (selectResult === CHANNEL_CLOSED) throw sendException(getCloseCause())
         else this
 
     private fun processResultSelectReceive(ignoredParam: Any?, selectResult: Any?): Any? =
-        if (selectResult === CHANNEL_CLOSED) throw receiveException(getCause())
+        if (selectResult === CHANNEL_CLOSED) throw receiveException(getCloseCause())
         else selectResult
 
     private fun processResultSelectReceiveOrNull(ignoredParam: Any?, selectResult: Any?): Any? =
         if (selectResult === CHANNEL_CLOSED) {
-            if (closeCause.value !== null) throw receiveException(getCause())
+            if (closeCause.value !== null) throw receiveException(getCloseCause())
             null
         } else selectResult
 
@@ -986,9 +986,7 @@ internal open class BufferedChannel<E>(
      */
     private val closeCause = atomic<Any?>(NO_CLOSE_CAUSE)
 
-    protected val closeCause2 get() = closeCause.value as Throwable?
-
-    private fun getCause() = closeCause.value.let { if (it is Throwable?) it else error("WTF: $it")}
+    protected fun getCloseCause() = closeCause.value.let { if (it is Throwable?) it else error("WTF: $it")}
 
     private fun receiveException(cause: Throwable?) =
         cause ?: ClosedReceiveChannelException(DEFAULT_CLOSE_MESSAGE)
@@ -1199,7 +1197,7 @@ internal open class BufferedChannel<E>(
     private fun Any.closeSender() = closeWaiter(receiver = false)
 
     private fun Any.closeWaiter(receiver: Boolean): Boolean {
-        val cause = getCause()
+        val cause = getCloseCause()
         return when (this) {
             is SenderBroadcast -> {
                 this.cont.resume(false)
@@ -1260,7 +1258,7 @@ internal open class BufferedChannel<E>(
         )
 
         private fun onCloseHasNext(): Boolean {
-            val cause = getCause()
+            val cause = getCloseCause()
             onReceiveSynchronizationCompletion()
             this.receiveResult = ClosedChannel(cause)
             if (cause == null) return false
@@ -1293,7 +1291,7 @@ internal open class BufferedChannel<E>(
                 },
                 onClosed = {
                     this.cont = null
-                    val cause = getCause()
+                    val cause = getCloseCause()
                     this.receiveResult = ClosedChannel(cause)
                     onReceiveSynchronizationCompletion()
                     if (cause == null) {

@@ -29,7 +29,7 @@ class Buffered1ChannelLincheckTest : ChannelLincheckTestBase(
     sequentialSpecification = SequentialBuffered1Channel::class.java
 )
 class Buffered1BroadcastChannelLincheckTest : ChannelLincheckTestBaseWithoutOnSend(
-    c = ChannelViaBroadcast(BufferedBroadcastChannel(1)),
+    c = ChannelViaBroadcast(BroadcastChannelImpl(1)),
     sequentialSpecification = SequentialBuffered1Channel::class.java,
     obstructionFree = false
 )
@@ -40,7 +40,7 @@ class Buffered2ChannelLincheckTest : ChannelLincheckTestBase(
     sequentialSpecification = SequentialBuffered2Channel::class.java
 )
 class Buffered2BroadcastChannelLincheckTest : ChannelLincheckTestBaseWithoutOnSend(
-    c = ChannelViaBroadcast(BufferedBroadcastChannel(2)),
+    c = ChannelViaBroadcast(BroadcastChannelImpl(2)),
     sequentialSpecification = SequentialBuffered2Channel::class.java,
     obstructionFree = false
 )

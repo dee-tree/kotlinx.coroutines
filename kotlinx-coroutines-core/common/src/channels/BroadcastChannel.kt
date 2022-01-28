@@ -7,6 +7,7 @@
 package kotlinx.coroutines.channels
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow.*
 import kotlinx.coroutines.channels.Channel.Factory.BUFFERED
 import kotlinx.coroutines.channels.Channel.Factory.CHANNEL_DEFAULT_CAPACITY
 import kotlinx.coroutines.channels.Channel.Factory.CONFLATED
@@ -73,8 +74,8 @@ public fun <E> BroadcastChannel(capacity: Int): BroadcastChannel<E> =
         0 -> throw IllegalArgumentException("Unsupported 0 capacity for BroadcastChannel")
         UNLIMITED -> throw IllegalArgumentException("Unsupported UNLIMITED capacity for BroadcastChannel")
         CONFLATED -> ConflatedBroadcastChannel()
-        BUFFERED -> BufferedBroadcastChannel(CHANNEL_DEFAULT_CAPACITY)
-        else -> BufferedBroadcastChannel(capacity)
+        BUFFERED -> BroadcastChannelImpl(CHANNEL_DEFAULT_CAPACITY)
+        else -> BroadcastChannelImpl(capacity)
     }
 
 /**
@@ -91,14 +92,15 @@ public fun <E> BroadcastChannel(capacity: Int): BroadcastChannel<E> =
  * In this implementation, [opening][openSubscription] and [closing][ReceiveChannel.cancel] subscription
  * takes linear time in the number of subscribers.
  *
- * **Note: This API is obsolete since 1.5.0.** It will be deprecated with warning in 1.6.0
- * and with error in 1.7.0. It is replaced with [StateFlow][kotlinx.coroutines.flow.StateFlow].
+ * **Note: This API is obsolete since 1.5.0.** It will be deprecated with warning in 1.7.0
+ * and with error in 1.8.0. It is replaced with [StateFlow][kotlinx.coroutines.flow.StateFlow].
  */
+@Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER")
 @ObsoleteCoroutinesApi
-internal class ConflatedBroadcastChannel<E>() :
-    BufferedBroadcastChannel<E>(capacity = CONFLATED),
-    BroadcastChannel<E>
+public class ConflatedBroadcastChannel<E> private constructor(private val broadcast: BroadcastChannelImpl<E>)
+    : BroadcastChannel<E> by broadcast
 {
+    public constructor(): this(BroadcastChannelImpl<E>(capacity = CONFLATED))
     /**
      * Creates an instance of this class that already holds a value.
      *
@@ -109,38 +111,6 @@ internal class ConflatedBroadcastChannel<E>() :
         trySend(value)
     }
 
-    override fun registerSelectForSend(select: SelectInstance<*>, element: Any?) {
-        trySend(element as E)
-            .onSuccess { select.selectInRegistrationPhase(Unit) }
-            .onClosed { select.selectInRegistrationPhase(CHANNEL_CLOSED) }
-    }
-}
-
-/**
- * Broadcast channel with array buffer of a fixed [capacity].
- * Sender suspends only when buffer is full due to one of the receives being slow to consume and
- * receiver suspends only when buffer is empty.
- *
- * **Note**, that elements that are sent to this channel while there are no
- * [openSubscription] subscribers are immediately lost.
- *
- * This channel is created by `BroadcastChannel(capacity)` factory function invocation.
- */
-internal open class BufferedBroadcastChannel<E>(
-    /**
-     * Buffer capacity.
-     */
-    val capacity: Int
-) : BufferedChannel<E>(capacity = Channel.RENDEZVOUS, onUndeliveredElement = null), BroadcastChannel<E> {
-    init {
-        require(capacity >= 1 || capacity == CONFLATED) { "ArrayBroadcastChannel capacity must be at least 1, but $capacity was specified" }
-    }
-
-    private val lock = ReentrantLock()
-    private val subscribers: MutableList<BufferedChannel<E>> = mutableListOf()
-
-    private var lastConflatedElement: Any? = NO_ELEMENT // NO_ELEMENT or E
-
     /**
      * The most recently sent element to this channel.
      *
@@ -148,31 +118,50 @@ internal open class BufferedBroadcastChannel<E>(
      * initial value and no value was sent yet or if it was [closed][close] without a cause.
      * It throws the original [close][SendChannel.close] cause exception if the channel has _failed_.
      */
-    @Suppress("UNCHECKED_CAST")
-    public val value: E get() = lock.withLock {
-        if (isClosedForReceive) {
-            throw closeCause2 ?: IllegalStateException("This broadcast channel is closed")
-        }
-        lastConflatedElement.let {
-            if (it !== NO_ELEMENT) it as E
-            else error("No value")
-        }
-    }
-
+    public val value: E get() = broadcast.value
     /**
      * The most recently sent element to this channel or `null` when this class is constructed without
      * initial value and no value was sent yet or if it was [closed][close].
      */
-    public val valueOrNull: E? get() = lock.withLock {
-        if (isClosedForReceive) null
-        else if (lastConflatedElement === NO_ELEMENT) null
-        else lastConflatedElement as E
+    public val valueOrNull: E? get() = broadcast.valueOrNull
+}
+
+/**
+ * A common implementation for both the broadcast channel with a buffer of fixed [capacity]
+ * and the conflated broadcast channel (see [ConflatedBroadcastChannel]).
+ *
+ * **Note**, that elements that are sent to this channel while there are no
+ * [openSubscription] subscribers are immediately lost.
+ *
+ * This channel is created by `BroadcastChannel(capacity)` factory function invocation.
+ */
+internal open class BroadcastChannelImpl<E>(
+    /**
+     * Buffer capacity; [Channel.CONFLATED] when this broadcast is conflated.
+     */
+    val capacity: Int
+) : BufferedChannel<E>(capacity = Channel.RENDEZVOUS, onUndeliveredElement = null), BroadcastChannel<E> {
+    init {
+        require(capacity >= 1 || capacity == CONFLATED) { "ArrayBroadcastChannel capacity must be at least 1, but $capacity was specified" }
     }
 
-    public override fun openSubscription(): ReceiveChannel<E> = lock.withLock {
+    // All operations are protected by this lock.
+    private val lock = ReentrantLock()
+    // The list of subscribers; all accesses should be protected by lock.
+    private val subscribers: MutableList<BufferedChannel<E>> = mutableListOf()
+    // When this broadcast is conflated, this field stores the last sent element.
+    // If this channel is empty or not conflated, it stores a special `NO_ELEMENT` marker.
+    private var lastConflatedElement: Any? = NO_ELEMENT // NO_ELEMENT or E
+
+    // ###########################
+    // # Subscription Management #
+    // ###########################
+
+    public override fun openSubscription(): ReceiveChannel<E> = lock.withLock { // protected by lock
+        // Is this broadcast conflated or buffered?
         val s = if (capacity == CONFLATED) SubscriberConflated() else SubscriberBuffered()
         if (isClosedForSend && lastConflatedElement === NO_ELEMENT) {
-            s.close(closeCause2)
+            s.close(getCloseCause())
             return@withLock s
         }
         if (lastConflatedElement !== NO_ELEMENT) {
@@ -182,12 +171,16 @@ internal open class BufferedBroadcastChannel<E>(
         s
     }
 
-    private fun removeSubscriberUsync(s: ReceiveChannel<E>) {
+    private fun removeSubscriber(s: ReceiveChannel<E>) = lock.withLock {
         subscribers.remove(s)
     }
 
+    // #############################
+    // # The `send(..)` Operations #
+    // #############################
+
     override suspend fun send(element: E) {
-        val subs = lock.withLock {
+        val subs = lock.withLock { // protected by lock
             if (isClosedForSend) throw sendException(trySend(element).exceptionOrNull())
             if (capacity == CONFLATED)
                 lastConflatedElement = element
@@ -196,28 +189,39 @@ internal open class BufferedBroadcastChannel<E>(
         subs.forEach {
             val success = it.sendBroadcast(element)
             if (!success) {
-                lock.withLock {
+                lock.withLock { // protected by lock
                     if(isClosedForSend) throw sendException(trySend(element).exceptionOrNull())
                 }
             }
         }
     }
 
-    override fun trySend(element: E): ChannelResult<Unit> = lock.withLock {
+    override fun trySend(element: E): ChannelResult<Unit> = lock.withLock { // protected by lock
+        // Is this channel closed for send?
         if (isClosedForSend) return super.trySend(element)
-        val success = capacity == CONFLATED || subscribers.none { it.shouldSendSuspend() }
-        if (!success) {
-            return ChannelResult.failure()
-        }
+        // Check whether the plain `send(..)` operation
+        // should suspend and fail in this case.
+        val shouldSuspend = subscribers.any { it.shouldSendSuspend() }
+        if (shouldSuspend) return ChannelResult.failure()
+        // Send the element to all subscribers.
+        // It is guaranteed that the attempt cannot fail,
+        // as both the broadcast closing and subscription
+        // cancellation are guarded by lock, which is held
+        // by the current operation.
         subscribers.forEach { it.trySend(element) }
-        if (capacity == CONFLATED)
-            lastConflatedElement = element
+        // Update the last sent element if this broadcast is conflated.
+        if (capacity == CONFLATED) lastConflatedElement = element
+        // Finish with success.
         return ChannelResult.success(Unit)
     }
 
+    // ###########################################
+    // # The `select` Expression: onSend { ... } #
+    // ###########################################
+
     override fun registerSelectForSend(select: SelectInstance<*>, element: Any?) {
         element as E
-        lock.withLock {
+        lock.withLock { // protected by lock
             val result = onSendStatus.remove(select)
             if (result != null) {
                 select.selectInRegistrationPhase(result)
@@ -236,7 +240,7 @@ internal open class BufferedBroadcastChannel<E>(
                 check(onSendStatus[select] == null)
                 onSendStatus[select] = if (success) Unit else CHANNEL_CLOSED
                 select as SelectImplementation<*>
-                val trySelectResult = select.trySelectDetailed(this@BufferedBroadcastChannel,  Unit)
+                val trySelectResult = select.trySelectDetailed(this@BroadcastChannelImpl,  Unit)
                 if (trySelectResult !== TrySelectDetailedResult.REREGISTER) {
                     onSendStatus.remove(select)
                 }
@@ -246,133 +250,84 @@ internal open class BufferedBroadcastChannel<E>(
     }
     private val onSendStatus = HashMap<SelectInstance<*>, Any?>() // select -> Unit or CHANNEL_CLOSED
 
-    override fun close(cause: Throwable?): Boolean = lock.withLock {
+    // ############################
+    // # Closing and Cancellation #
+    // ############################
+
+    override fun close(cause: Throwable?): Boolean = lock.withLock { // protected by lock
+        // Close all subscriptions first.
         subscribers.forEach { it.close(cause) }
+        // Remove all subscriptions that do not contain
+        // buffered elements or waiting send-s to avoid
+        // memory leaks. We must keep other subscriptions
+        // in case `broadcast.cancel(..)` is called.
         subscribers.removeAll { !it.hasElements() }
-        return super.close(cause)
+        // Delegate to the parent implementation.
+        super.close(cause)
     }
 
-    override fun cancelImpl(cause: Throwable?): Boolean = lock.withLock {
-        super.cancelImpl(cause).also {
-            subscribers.forEach {
-                it as Subscriber<E>
-                it.cancelImplWithoutRemovingSubscriber(cause)
-            }
-            subscribers.clear()
-            lastConflatedElement = NO_ELEMENT
-        }
+    override fun cancelImpl(cause: Throwable?): Boolean = lock.withLock { // protected by lock
+        // Cancel all subscriptions. As part of cancellation procedure,
+        // subscriptions automatically remove themselves from this broadcast.
+        ArrayList(subscribers).forEach { it.cancelImpl(cause) }
+        // For the conflated implementation, clear the last sent element.
+        lastConflatedElement = NO_ELEMENT
+        // Finally, delegate to the parent implementation.
+        super.cancelImpl(cause)
     }
 
     override val isClosedForSend: Boolean
+        // Protect by lock to synchronize with `close(..)` / `cancel(..)`.
         get() = lock.withLock { super.isClosedForSend }
 
-    private interface Subscriber<E> : ReceiveChannel<E> {
-        fun cancelImplWithoutRemovingSubscriber(cause: Throwable?)
-    }
+    // ##############################
+    // # Subscriber Implementations #
+    // ##############################
 
-    private inner class SubscriberBuffered : BufferedChannel<E>(capacity = capacity), Subscriber<E> {
-        override fun tryReceive(): ChannelResult<E> {
-            lock.lock()
-            return super.tryReceive()
-        }
-
-        override suspend fun receive(): E {
-            lock.lock()
-            return super.receive()
-        }
-
-        override suspend fun receiveCatching(): ChannelResult<E> {
-            lock.lock()
-            return super.receiveCatching()
-        }
-
-        override fun registerSelectForReceive(select: SelectInstance<*>, ignoredParam: Any?) {
-            lock.lock()
-            super.registerSelectForReceive(select, ignoredParam)
-        }
-
-        override fun iterator() = SubscriberIterator()
-
-        override fun onReceiveSynchronizationCompletion() {
-            super.onReceiveSynchronizationCompletion()
-            lock.unlock()
-        }
-
-        override val isClosedForReceive: Boolean
-            get() = lock.withLock { super.isClosedForReceive }
-
-        override val isEmpty: Boolean
-            get() = lock.withLock { super.isEmpty }
-
+    private inner class SubscriberBuffered : BufferedChannel<E>(capacity = capacity) {
         public override fun cancelImpl(cause: Throwable?): Boolean = lock.withLock {
-            removeSubscriberUsync(this@SubscriberBuffered )
+            // Remove this subscriber from the broadcast on cancellation.
+            removeSubscriber(this@SubscriberBuffered )
             super.cancelImpl(cause)
-        }
-
-        override fun cancelImplWithoutRemovingSubscriber(cause: Throwable?) {
-            super.cancelImpl(cause)
-        }
-
-        private inner class SubscriberIterator : BufferedChannelIterator() {
-            override suspend fun hasNext(): Boolean {
-                lock.lock()
-                return super.hasNext()
-            }
         }
     }
 
-    private inner class SubscriberConflated
-        : ConflatedBufferedChannel<E>(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST), Subscriber<E>
-    {
-        override fun tryReceive(): ChannelResult<E> {
-            lock.lock()
-            return super.tryReceive()
-        }
-
-        override suspend fun receive(): E {
-            lock.lock()
-            return super.receive()
-        }
-
-        override suspend fun receiveCatching(): ChannelResult<E> {
-            lock.lock()
-            return super.receiveCatching()
-        }
-
-        override fun registerSelectForReceive(select: SelectInstance<*>, ignoredParam: Any?) {
-            lock.lock()
-            super.registerSelectForReceive(select, ignoredParam)
-        }
-
-        override fun iterator() = SubscriberIterator()
-
-        override fun onReceiveSynchronizationCompletion() {
-            super.onReceiveSynchronizationCompletion()
-            lock.unlock()
-        }
-
-        override val isClosedForReceive: Boolean
-            get() = lock.withLock { super.isClosedForReceive }
-
-        override val isEmpty: Boolean
-            get() = lock.withLock { super.isEmpty }
-
-        public override fun cancelImpl(cause: Throwable?): Boolean = lock.withLock {
-            removeSubscriberUsync(this@SubscriberConflated )
-            super.cancelImpl(cause)
-        }
-
-        override fun cancelImplWithoutRemovingSubscriber(cause: Throwable?) {
-            super.cancelImpl(cause)
-        }
-
-        private inner class SubscriberIterator : ConflatedChannelIterator() {
-            override suspend fun hasNext(): Boolean {
-                lock.lock()
-                return super.hasNext()
-            }
+    private inner class SubscriberConflated : ConflatedBufferedChannel<E>(capacity = 1, onBufferOverflow = DROP_OLDEST) {
+        public override fun cancelImpl(cause: Throwable?): Boolean {
+            // Remove this subscriber from the broadcast on cancellation.
+            removeSubscriber(this@SubscriberConflated )
+            return super.cancelImpl(cause)
         }
     }
+
+    // ########################################
+    // # ConflatedBroadcastChannel Operations #
+    // ########################################
+
+    @Suppress("UNCHECKED_CAST")
+    val value: E get() = lock.withLock {
+        // Is this channel closed for sending?
+        if (isClosedForSend) {
+            throw getCloseCause() ?: IllegalStateException("This broadcast channel is closed")
+        }
+        // Is there sent element?
+        if (lastConflatedElement === NO_ELEMENT) error("No value")
+        // Return the last sent element.
+        lastConflatedElement as E
+    }
+
+    val valueOrNull: E? get() = lock.withLock {
+        // Is this channel closed for sending?
+        if (isClosedForReceive) null
+        // Is there sent element?
+        else if (lastConflatedElement === NO_ELEMENT) null
+        // Return the last sent element.
+        else lastConflatedElement as E
+    }
+
+    // #################
+    // # For Debugging #
+    // #################
 
     override fun toString() =
         (if (lastConflatedElement !== NO_ELEMENT) "CONFLATED_ELEMENT=$lastConflatedElement; " else "") +

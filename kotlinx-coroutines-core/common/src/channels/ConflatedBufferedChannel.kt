@@ -74,7 +74,6 @@ internal open class ConflatedBufferedChannel<E>(
     }
 
     override fun iterator(): ChannelIterator<E> = ConflatedChannelIterator()
-
     internal open inner class ConflatedChannelIterator : BufferedChannelIterator() {
         override suspend fun hasNext(): Boolean {
             // Acquire the lock in the beginning of receive operation.
@@ -155,20 +154,22 @@ internal open class ConflatedBufferedChannel<E>(
         error("unreachable")
     }
 
-    override fun close(cause: Throwable?) = lock.withLock { // guard by lock
+    override fun shouldSendSuspend() = false // never suspends
+
+    override fun close(cause: Throwable?) = lock.withLock { // protected by lock
         super.close(cause)
     }
 
-    override fun cancelImpl(cause: Throwable?) = lock.withLock { // guard by lock
+    override fun cancelImpl(cause: Throwable?) = lock.withLock { // protected by lock
         super.cancelImpl(cause)
     }
 
     override val isClosedForSend: Boolean
-        get() = lock.withLock { super.isClosedForSend } // guard by lock
+        get() = lock.withLock { super.isClosedForSend } // protected by lock
 
     override val isClosedForReceive: Boolean
-        get() = lock.withLock { super.isClosedForReceive } // guard by lock
+        get() = lock.withLock { super.isClosedForReceive } // protected by lock
 
     override val isEmpty: Boolean
-        get() = lock.withLock { super.isEmpty } // guard by lock
+        get() = lock.withLock { super.isEmpty } // protected by lock
 }
