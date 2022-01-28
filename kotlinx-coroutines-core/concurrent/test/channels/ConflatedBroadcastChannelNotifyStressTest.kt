@@ -9,8 +9,8 @@ import kotlinx.coroutines.*
 import kotlin.test.*
 
 class ConflatedBroadcastChannelNotifyStressTest : TestBase() {
-    private val nSenders = 2
-    private val nReceivers = 3
+    private val nSenders = 5
+    private val nReceivers = 10
     private val nEvents =  (if (isNative) 5_000 else 500_000) * stressTestMultiplier
     private val timeLimit = 30_000L * stressTestMultiplier // 30 sec
 
@@ -26,7 +26,7 @@ class ConflatedBroadcastChannelNotifyStressTest : TestBase() {
         println("--- ConflatedBroadcastChannelNotifyStressTest")
         val senders = List(nSenders) { senderId ->
             launch(Dispatchers.Default + CoroutineName("Sender$senderId")) {
-                repeat(nEvents) { i ->
+                repeat(nEvents + nSenders) { i ->
                     if (i % nSenders == senderId) {
                         broadcast.trySend(i)
                         sentTotal.incrementAndGet()
@@ -62,7 +62,6 @@ class ConflatedBroadcastChannelNotifyStressTest : TestBase() {
         try {
             withTimeout(timeLimit) {
                 senders.forEach { it.join() }
-                broadcast.trySend(nEvents) // last event to signal receivers termination
                 receivers.forEach { it.join() }
             }
         } catch (e: CancellationException) {
@@ -76,7 +75,7 @@ class ConflatedBroadcastChannelNotifyStressTest : TestBase() {
         println("              Received ${receivedTotal.value} events")
         assertEquals(nSenders, sendersCompleted.value)
         assertEquals(nReceivers, receiversCompleted.value)
-        assertEquals(nEvents, sentTotal.value)
+        assertEquals(nEvents + nSenders, sentTotal.value)
     }
 
     private suspend fun waitForEvent(): Int =

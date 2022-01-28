@@ -51,7 +51,7 @@ public final class kotlinx/coroutines/CancellableContinuation$DefaultImpls {
 	public static synthetic fun tryResume$default (Lkotlinx/coroutines/CancellableContinuation;Ljava/lang/Object;Ljava/lang/Object;ILjava/lang/Object;)Ljava/lang/Object;
 }
 
-public class kotlinx/coroutines/CancellableContinuationImpl : kotlin/coroutines/jvm/internal/CoroutineStackFrame, kotlinx/coroutines/CancellableContinuation {
+public class kotlinx/coroutines/CancellableContinuationImpl : kotlin/coroutines/jvm/internal/CoroutineStackFrame, kotlinx/coroutines/CancellableContinuation, kotlinx/coroutines/channels/Waiter {
 	public fun <init> (Lkotlin/coroutines/Continuation;I)V
 	public final fun callCancelHandler (Lkotlinx/coroutines/CancelHandler;Ljava/lang/Throwable;)V
 	public final fun callOnCancellation (Lkotlin/jvm/functions/Function1;Ljava/lang/Throwable;)V
@@ -768,23 +768,6 @@ public final class kotlinx/coroutines/channels/ClosedSendChannelException : java
 	public fun <init> (Ljava/lang/String;)V
 }
 
-public final class kotlinx/coroutines/channels/ConflatedBroadcastChannel : kotlinx/coroutines/channels/BroadcastChannel {
-	public fun <init> ()V
-	public fun <init> (Ljava/lang/Object;)V
-	public synthetic fun cancel (Ljava/lang/Throwable;)Z
-	public fun cancel (Ljava/util/concurrent/CancellationException;)V
-	public fun close (Ljava/lang/Throwable;)Z
-	public fun getOnSend ()Lkotlinx/coroutines/selects/SelectClause2;
-	public final fun getValue ()Ljava/lang/Object;
-	public final fun getValueOrNull ()Ljava/lang/Object;
-	public fun invokeOnClose (Lkotlin/jvm/functions/Function1;)V
-	public fun isClosedForSend ()Z
-	public fun offer (Ljava/lang/Object;)Z
-	public fun openSubscription ()Lkotlinx/coroutines/channels/ReceiveChannel;
-	public fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
-	public fun trySend-JP2dKIU (Ljava/lang/Object;)Ljava/lang/Object;
-}
-
 public final class kotlinx/coroutines/channels/ProduceKt {
 	public static final fun awaitClose (Lkotlinx/coroutines/channels/ProducerScope;Lkotlin/jvm/functions/Function0;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun awaitClose$default (Lkotlinx/coroutines/channels/ProducerScope;Lkotlin/jvm/functions/Function0;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
@@ -853,6 +836,9 @@ public final class kotlinx/coroutines/channels/TickerMode : java/lang/Enum {
 	public static final field FIXED_PERIOD Lkotlinx/coroutines/channels/TickerMode;
 	public static fun valueOf (Ljava/lang/String;)Lkotlinx/coroutines/channels/TickerMode;
 	public static fun values ()[Lkotlinx/coroutines/channels/TickerMode;
+}
+
+public abstract interface class kotlinx/coroutines/channels/Waiter {
 }
 
 public final class kotlinx/coroutines/debug/internal/DebugCoroutineInfo {
@@ -1277,7 +1263,7 @@ protected final class kotlinx/coroutines/selects/SelectImplementation$ClauseData
 	public final fun tryRegister (Lkotlinx/coroutines/selects/SelectImplementation;)Z
 }
 
-public abstract interface class kotlinx/coroutines/selects/SelectInstance {
+public abstract interface class kotlinx/coroutines/selects/SelectInstance : kotlinx/coroutines/channels/Waiter {
 	public abstract fun disposeOnCompletion (Lkotlinx/coroutines/DisposableHandle;)V
 	public abstract fun getContext ()Lkotlin/coroutines/CoroutineContext;
 	public abstract fun selectInRegistrationPhase (Ljava/lang/Object;)V
