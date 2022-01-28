@@ -5,6 +5,7 @@
 package kotlinx.coroutines.channels
 
 import kotlinx.atomicfu.locks.*
+import kotlinx.coroutines.assert
 import kotlinx.coroutines.channels.BufferOverflow.*
 import kotlinx.coroutines.channels.ChannelResult.Companion.success
 import kotlinx.coroutines.internal.callUndeliveredElement
@@ -18,18 +19,15 @@ import kotlin.coroutines.*
  *
  * This channel is created by `Channel(capacity)` factory function invocation.
  *
- * This implementation is blocking and uses a lock to protect send and receive operations.
- * Removing a cancelled sender or receiver from a list of waiters is lock-free.
+ * This implementation is blocking and uses coarse-grained locking to protect all channel operations.
+ * However, removing a cancelled sender or receiver from a list of waiters is lock-free.
  **/
 internal open class ConflatedBufferedChannel<E>(
-    /**
-     * Buffer capacity.
-     */
     private val capacity: Int,
     private val onBufferOverflow: BufferOverflow,
     onUndeliveredElement: OnUndeliveredElement<E>? = null
 ) : BufferedChannel<E>(capacity = capacity, onUndeliveredElement = onUndeliveredElement) {
-    private val lock = reentrantLock()
+    private val lock = reentrantLock() // guard all operations by this lock
 
     init {
         require(onBufferOverflow !== SUSPEND) {
@@ -41,21 +39,36 @@ internal open class ConflatedBufferedChannel<E>(
     }
 
     override suspend fun receive(): E {
+        // Acquire the lock in the beginning of receive operation.
+        // Once the synchronization is completed (either the first
+        // element is retrieved, the operation suspends, or this
+        // channel is discovered in the closed state without element),
+        // `onReceiveSynchronizationCompletion` must be called by the
+        // underneath buffered channel implementation.
         lock.lock()
         return super.receive()
     }
 
     override suspend fun receiveCatching(): ChannelResult<E> {
+        // Acquire the lock in the beginning of receive operation.
+        // It automatically releases once the synchronization completes.
+        // See `receive` operation for details.
         lock.lock()
         return super.receiveCatching()
     }
 
     override fun tryReceive(): ChannelResult<E> {
+        // Acquire the lock in the beginning of receive operation.
+        // It automatically releases once the synchronization completes.
+        // See `receive` operation for details.
         lock.lock()
         return super.tryReceive()
     }
 
     override fun registerSelectForReceive(select: SelectInstance<*>, ignoredParam: Any?) {
+        // Acquire the lock in the beginning of receive operation.
+        // It automatically releases once the synchronization completes.
+        // See `receive` operation for details.
         lock.lock()
         super.registerSelectForReceive(select, ignoredParam)
     }
@@ -64,22 +77,21 @@ internal open class ConflatedBufferedChannel<E>(
 
     internal open inner class ConflatedChannelIterator : BufferedChannelIterator() {
         override suspend fun hasNext(): Boolean {
+            // Acquire the lock in the beginning of receive operation.
+            // It automatically releases once the synchronization completes.
+            // See `receive` operation for details.
             lock.lock()
             return super.hasNext()
         }
     }
 
     override fun onReceiveSynchronizationCompletion() {
+        // Release the lock once the receive synchronization is done.
         lock.unlock()
     }
 
-    /*
-     * Modification for send operations: all of them should be protected by lock
-     * and never suspend; the [onBufferOverflow] strategy is used instead of suspension.
-     *
-     */
-
     override suspend fun send(element: E) {
+        // Should never suspend, implement via `trySend(..)`.
         val attempt = trySend(element)
         if (attempt.isClosed) {
             onUndeliveredElement?.callUndeliveredElement(element, coroutineContext)
@@ -87,30 +99,40 @@ internal open class ConflatedBufferedChannel<E>(
         }
     }
 
-    override fun trySend(element: E): ChannelResult<Unit> = lock.withLock {
-        while (true) {
-            if (!shouldSendSuspend()) {
-                val trySendResult = super.trySend(element)
-                if (trySendResult.isClosed || trySendResult.isSuccess) return trySendResult
-                continue
+    override fun trySend(element: E): ChannelResult<Unit> = lock.withLock { // guard the operation by lock
+        // Is the buffer already full and the channel is not closed?
+        // In other words, should the plain `send(..)` operation on
+        // the buffer channel under the hood suspend?
+        if (!super.shouldSendSuspend()) {
+            // There is either a waiting receiver, space in the buffer,
+            // or this channel is closed for sending.
+            // Try to send the element into the buffered channel underhood.
+            return super.trySend(element).also {
+                assert { it.isClosed || it.isSuccess }
             }
-            if (onBufferOverflow === DROP_LATEST) {
-                onUndeliveredElement?.invoke(element)
-            } else { // DROP_OLDEST
-                val tryReceiveResult = tryReceiveInternal()
-                if (tryReceiveResult.isFailure) continue
-                check(!shouldSendSuspend())
-                super.trySend(element)
-                onUndeliveredElement?.invoke(tryReceiveResult.getOrThrow())
-            }
-            return success(Unit)
         }
-        @Suppress("UNREACHABLE_CODE")
-        error("unreachable") // cannot remove this line due to type inference
+        // The plain `send(..)` operation is bound to suspend.
+        // Either drop the latest or the older element, invoking
+        // `onUndeliveredElement` on it.
+        if (onBufferOverflow === DROP_LATEST) {
+            onUndeliveredElement?.invoke(element)
+        } else { // DROP_OLDEST
+            // Receive the oldest element. The call below
+            // does not invoke `onReceiveSynchronizationCompletion`.
+            val oldestElement = tryReceiveInternal().getOrThrow()
+            // Now, it is possible to send the element -- do it!
+            super.trySend(element).also {
+                assert { it.isSuccess }
+            }
+            // Finally, invoke `onUndeliveredElement`
+            // handler on the dropped oldest element.
+            onUndeliveredElement?.invoke(oldestElement)
+        }
+        return success(Unit)
     }
 
     override suspend fun sendBroadcast(element: E): Boolean {
-        trySend(element)
+        trySend(element) // fails only when this channel is closed.
             .onSuccess { return true }
             .onClosed { return false }
         error("unreachable")
@@ -118,6 +140,9 @@ internal open class ConflatedBufferedChannel<E>(
 
     @Suppress("UNCHECKED_CAST")
     override fun registerSelectForSend(select: SelectInstance<*>, element: Any?) {
+        // The plain `send(..)` operation never suspends. Thus, either this
+        // attempt to send the element succeeds or the channel is closed.
+        // In any case, complete this `select` in the registration phase.
         trySend(element as E).let {
             it.onSuccess {
                 select.selectInRegistrationPhase(Unit)
@@ -130,20 +155,20 @@ internal open class ConflatedBufferedChannel<E>(
         error("unreachable")
     }
 
-    override fun close(cause: Throwable?) = lock.withLock {
+    override fun close(cause: Throwable?) = lock.withLock { // guard by lock
         super.close(cause)
     }
 
-    override fun cancelImpl(cause: Throwable?) = lock.withLock {
+    override fun cancelImpl(cause: Throwable?) = lock.withLock { // guard by lock
         super.cancelImpl(cause)
     }
 
     override val isClosedForSend: Boolean
-        get() = lock.withLock { super.isClosedForSend }
+        get() = lock.withLock { super.isClosedForSend } // guard by lock
 
     override val isClosedForReceive: Boolean
-        get() = lock.withLock { super.isClosedForReceive }
+        get() = lock.withLock { super.isClosedForReceive } // guard by lock
 
     override val isEmpty: Boolean
-        get() = lock.withLock { super.isEmpty }
+        get() = lock.withLock { super.isEmpty } // guard by lock
 }
