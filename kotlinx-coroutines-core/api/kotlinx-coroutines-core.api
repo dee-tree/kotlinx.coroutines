@@ -768,6 +768,23 @@ public final class kotlinx/coroutines/channels/ClosedSendChannelException : java
 	public fun <init> (Ljava/lang/String;)V
 }
 
+public final class kotlinx/coroutines/channels/ConflatedBroadcastChannel : kotlinx/coroutines/channels/BroadcastChannel {
+	public fun <init> ()V
+	public fun <init> (Ljava/lang/Object;)V
+	public synthetic fun cancel (Ljava/lang/Throwable;)Z
+	public fun cancel (Ljava/util/concurrent/CancellationException;)V
+	public fun close (Ljava/lang/Throwable;)Z
+	public fun getOnSend ()Lkotlinx/coroutines/selects/SelectClause2;
+	public final fun getValue ()Ljava/lang/Object;
+	public final fun getValueOrNull ()Ljava/lang/Object;
+	public fun invokeOnClose (Lkotlin/jvm/functions/Function1;)V
+	public fun isClosedForSend ()Z
+	public fun offer (Ljava/lang/Object;)Z
+	public fun openSubscription ()Lkotlinx/coroutines/channels/ReceiveChannel;
+	public fun send (Ljava/lang/Object;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public fun trySend-JP2dKIU (Ljava/lang/Object;)Ljava/lang/Object;
+}
+
 public final class kotlinx/coroutines/channels/ProduceKt {
 	public static final fun awaitClose (Lkotlinx/coroutines/channels/ProducerScope;Lkotlin/jvm/functions/Function0;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun awaitClose$default (Lkotlinx/coroutines/channels/ProducerScope;Lkotlin/jvm/functions/Function0;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
