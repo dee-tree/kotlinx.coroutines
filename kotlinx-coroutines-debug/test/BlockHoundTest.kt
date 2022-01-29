@@ -56,20 +56,22 @@ class BlockHoundTest : TestBase() {
     }
 
     @Test
-    fun testChannelNotBeingConsideredBlocking() = runTest {
+    fun testBroadcastChannelNotBeingConsideredBlocking() = runTest {
         withContext(Dispatchers.Default) {
             // Copy of kotlinx.coroutines.channels.ArrayChannelTest.testSimple
-            val q = Channel<Int>(1)
-            check(q.isEmpty)
-            check(!q.isClosedForReceive)
+            val q = BroadcastChannel<Int>(1)
+            val s = q.openSubscription()
             check(!q.isClosedForSend)
+            check(s.isEmpty)
+            check(!s.isClosedForReceive)
             val sender = launch {
                 q.send(1)
                 q.send(2)
             }
             val receiver = launch {
-                q.receive() == 1
-                q.receive() == 2
+                s.receive() == 1
+                s.receive() == 2
+                s.cancel()
             }
             sender.join()
             receiver.join()
@@ -77,7 +79,7 @@ class BlockHoundTest : TestBase() {
     }
 
     @Test
-    fun testConflatedChannelsNotBeingConsideredBlocking() = runTest {
+    fun testConflatedChannelNotBeingConsideredBlocking() = runTest {
         withContext(Dispatchers.Default) {
             val q = Channel<Int>(Channel.CONFLATED)
             check(q.isEmpty)
