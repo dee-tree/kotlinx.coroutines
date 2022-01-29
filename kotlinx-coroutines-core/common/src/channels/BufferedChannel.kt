@@ -986,7 +986,7 @@ internal open class BufferedChannel<E>(
      */
     private val closeCause = atomic<Any?>(NO_CLOSE_CAUSE)
 
-    protected fun getCloseCause() = closeCause.value.let { if (it is Throwable?) it else error("WTF: $it")}
+    protected fun getCloseCause() = closeCause.value as Throwable?
 
     private fun receiveException(cause: Throwable?) =
         cause ?: ClosedReceiveChannelException(DEFAULT_CLOSE_MESSAGE)

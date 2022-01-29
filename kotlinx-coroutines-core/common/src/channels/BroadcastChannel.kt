@@ -157,21 +157,29 @@ internal open class BroadcastChannelImpl<E>(
     // # Subscription Management #
     // ###########################
 
-    public override fun openSubscription(): ReceiveChannel<E> = lock.withLock { // protected by lock
+    override fun openSubscription(): ReceiveChannel<E> = lock.withLock { // protected by lock
         // Is this broadcast conflated or buffered?
+        // Create the corresponding subscription channel.
         val s = if (capacity == CONFLATED) SubscriberConflated() else SubscriberBuffered()
+        // If this broadcast is already closed or cancelled,
+        // and the last sent element is not available in case
+        // this broadcast is conflated, close the created
+        // subscriber immediately and return it.
         if (isClosedForSend && lastConflatedElement === NO_ELEMENT) {
             s.close(getCloseCause())
-            return@withLock s
+            return s
         }
+        // Is this broadcast conflated? If so, send
+        // the last sent element to the subscriber.
         if (lastConflatedElement !== NO_ELEMENT) {
             s.trySend(value)
         }
+        // Add the subscriber to the list and return it.
         subscribers += s
         s
     }
 
-    private fun removeSubscriber(s: ReceiveChannel<E>) = lock.withLock {
+    private fun removeSubscriber(s: ReceiveChannel<E>) = lock.withLock { // protected by lock
         subscribers.remove(s)
     }
 
@@ -179,20 +187,46 @@ internal open class BroadcastChannelImpl<E>(
     // # The `send(..)` Operations #
     // #############################
 
+    /**
+     * Sends the specified element to all subscribers.
+     *
+     * **!!! THIS IMPLEMENTATION IS NOT LINEARIZABLE !!!**
+     *
+     * As the operation should send the element to multiple
+     * subscribers simultaneously, it is non-trivial to
+     * implement it in an atomic way. Specifically, this
+     * would require a special implementation that does
+     * not transfer the element until all parties are able
+     * to resume it (this `send(..)` can be cancelled
+     * or the broadcast can become closed in the meantime).
+     * As broadcasts are obsolete, we keep this implementation
+     * as simple as possible, allowing non-linearizability
+     * in corner cases.
+     */
     override suspend fun send(element: E) {
         val subs = lock.withLock { // protected by lock
-            if (isClosedForSend) throw sendException(trySend(element).exceptionOrNull())
-            if (capacity == CONFLATED)
-                lastConflatedElement = element
+            // Is this channel closed for send?
+            if (isClosedForSend) throw sendException(getCloseCause())
+            // Update the last sent element if this broadcast is conflated.
+            if (capacity == CONFLATED) lastConflatedElement = element
+            // Get a copy of subscriber list. Unfortunately,
+            // it is impossible to send the element to the subscribers
+            // under the lock due to possible suspensiobs.
             ArrayList(subscribers)
         }
+        // The lock has been released. Send the element to the
+        // subscribers one-by-one, and finish immediately
+        // when this broadcast discovered in the closed state.
+        // Note that this implementation is non-linearizable;
+        // see this method documentation for details.
         subs.forEach {
+            // We use special function to send the element,
+            // which returns `true` on success and `false`
+            // if the subscriber is closed.
             val success = it.sendBroadcast(element)
-            if (!success) {
-                lock.withLock { // protected by lock
-                    if(isClosedForSend) throw sendException(trySend(element).exceptionOrNull())
-                }
-            }
+            // The sending attempt has failed.
+            // Check whether the broadcast is closed.
+            if (!success && isClosedForSend) throw sendException(getCloseCause())
         }
     }
 
@@ -220,35 +254,67 @@ internal open class BroadcastChannelImpl<E>(
     // ###########################################
 
     override fun registerSelectForSend(select: SelectInstance<*>, element: Any?) {
+        // It is extremely complicated to support sending via `select` for broadcasts,
+        // as the operation should wait on multiple subscribers simultaneously.
+        // At the same time, broadcasts are obsolete, so we need a simple implementation
+        // that works somehow. Here is a tricky work-around. First, we launch a new
+        // coroutine that performs plain `send(..)` operation and tries to complete
+        // this `select` via `trySelect`, independently on whether it is in the
+        // registration or in the waiting phase. On success, the operation finishes.
+        // On failure, if another clause is already selected or the `select` operation
+        // has been cancelled, we observe non-linearizable behaviour, as this `onSend`
+        // clause is completed as well. However, we believe that such a non-linearizability
+        // is fine for obsolete API. The last case is when the `select` operation is still
+        // in the registration case, so this `onSend` clause should be re-registered.
+        // The idea is that we keep information that this `onSend` clause is already selected
+        // and finish immediately.
+        @Suppress("UNCHECKED_CAST")
         element as E
-        lock.withLock { // protected by lock
-            val result = onSendStatus.remove(select)
-            if (result != null) {
+        // First, check whether this `onSend` clause is already
+        // selected, finishing immediately in this case.
+        lock.withLock {
+            val result = onSendInternalResult.remove(select)
+            if (result != null) { // already selected!
+                // `result` is either `Unit` ot `CHANNEL_CLOSED`.
                 select.selectInRegistrationPhase(result)
                 return
             }
         }
+        // Start a new coroutine that performs plain `send(..)`
+        // and tries to select this `onSend` clause at the end.
         CoroutineScope(select.context).launch(start = CoroutineStart.UNDISPATCHED) {
             val success: Boolean = try {
                 send(element)
+                // The element has been successfully sent!
                 true
             } catch (t: Throwable) {
-                // closed
+                // This broadcast is closed :(
                 false
             }
+            // Mark this `onSend` clause as selected and
+            // try to complete the `select` operation.
             lock.withLock {
-                check(onSendStatus[select] == null)
-                onSendStatus[select] = if (success) Unit else CHANNEL_CLOSED
+                // Status of this `onSend` clause should not be presented yet.
+                assert { onSendInternalResult[select] == null }
+                // Success or fail? Put the corresponding result.
+                onSendInternalResult[select] = if (success) Unit else CHANNEL_CLOSED
+                // Try to select this `onSend` clause.
                 select as SelectImplementation<*>
                 val trySelectResult = select.trySelectDetailed(this@BroadcastChannelImpl,  Unit)
                 if (trySelectResult !== TrySelectDetailedResult.REREGISTER) {
-                    onSendStatus.remove(select)
+                    // In case of re-registration (this `select` was still
+                    // in the registration phase), the algorithm will invoke
+                    // `registerSelectForSend`. As we stored an information that
+                    // this `onClose` clause is already selected (in `onSendInternalResult`),
+                    // the algorithm, will complete immediately. Otherwise, to avoid memory
+                    // leaks, we must remove this information from the hashmap.
+                    onSendInternalResult.remove(select)
                 }
             }
 
         }
     }
-    private val onSendStatus = HashMap<SelectInstance<*>, Any?>() // select -> Unit or CHANNEL_CLOSED
+    private val onSendInternalResult = HashMap<SelectInstance<*>, Any?>() // select -> Unit or CHANNEL_CLOSED
 
     // ############################
     // # Closing and Cancellation #
@@ -316,6 +382,7 @@ internal open class BroadcastChannelImpl<E>(
         lastConflatedElement as E
     }
 
+    @Suppress("UNCHECKED_CAST")
     val valueOrNull: E? get() = lock.withLock {
         // Is this channel closed for sending?
         if (isClosedForReceive) null
