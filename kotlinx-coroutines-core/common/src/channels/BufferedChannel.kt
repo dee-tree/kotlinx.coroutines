@@ -331,32 +331,32 @@ internal open class BufferedChannel<E>(
         s: Long,
         waiter: W,
     ): Int {
-//        val curState = segment.getState(index)
-//        when {
-//            curState === null -> {
-//                segment.storeElement(index, element)
-//                if (bufferOrRendezvousSend(s)) {
-//                    if (segment.casState(index, null, CELL_BUFFERED2)) {
-//                        return RESULT_BUFFERED
-//                    }
-//                } else {
-//                    if (waiter == null) {
-//                        segment.cleanElement(index)
-//                        return RESULT_NO_WAITER
-//                    }
-//                    if (segment.casState(index, null, waiter)) return RESULT_SUSPEND
-//                }
-//            }
-//            curState is Waiter -> {
-//                segment.cleanElement(index)
-//                if (segment.casState(index, curState, DONE)) {
-//                    return if (curState.tryResumeReceiver(element)) {
-//                        onReceiveDequeued()
-//                        RESULT_RENDEZVOUS
-//                    } else RESULT_FAILED
-//                }
-//            }
-//        }
+        val curState = segment.getState(index)
+        when {
+            curState === null -> {
+                segment.storeElement(index, element)
+                if (bufferOrRendezvousSend(s)) {
+                    if (segment.casState(index, null, CELL_BUFFERED)) {
+                        return RESULT_BUFFERED
+                    }
+                } else {
+                    if (waiter == null) {
+                        segment.cleanElement(index)
+                        return RESULT_NO_WAITER
+                    }
+                    if (segment.casState(index, null, waiter)) return RESULT_SUSPEND
+                }
+            }
+            curState is Waiter -> {
+                segment.cleanElement(index)
+                if (segment.casState(index, curState, DONE)) {
+                    return if (curState.tryResumeReceiver(element)) {
+                        onReceiveDequeued()
+                        RESULT_RENDEZVOUS
+                    } else RESULT_FAILED
+                }
+            }
+        }
         return updateCellSendSlow(segment, index, element, s, waiter)
     }
 
@@ -392,7 +392,7 @@ internal open class BufferedChannel<E>(
                     // Otherwise, try to store the specified waiter in the cell.
                     if (bufferOrRendezvousSend(s)) {
                         // Move the cell state to BUFFERED.
-                        if (segment.casState(index, null, CELL_BUFFERED2)) {
+                        if (segment.casState(index, null, CELL_BUFFERED)) {
                             // The element has been successfully buffered, finish.
                             return if (s < receivers.value) RESULT_RENDEZVOUS else RESULT_BUFFERED
                         }
@@ -672,8 +672,8 @@ internal open class BufferedChannel<E>(
                     return element
                 }
             }
-            curState === CELL_BUFFERED2 -> {
-                if (segment.casState(i, curState, DONE_R)) {
+            curState === CELL_BUFFERED -> {
+                if (segment.casState(i, curState, DONE)) {
                     val element = segment.retrieveElement(i)
                     expandBuffer()
                     return element
@@ -739,8 +739,8 @@ internal open class BufferedChannel<E>(
                         return element
                     }
                 }
-                state === CELL_BUFFERED2 -> {
-                    if (segment.casState(i, state, DONE_R)) {
+                state === CELL_BUFFERED -> {
+                    if (segment.casState(i, state, DONE)) {
                         val element = segment.retrieveElement(i)
                         expandBuffer()
                         return element
@@ -858,7 +858,7 @@ internal open class BufferedChannel<E>(
                 state === null -> {
                     if (segm.casState(i, state, BUFFERING)) return true
                 }
-                state === CELL_BUFFERED || state === CELL_BUFFERED2 || state === BROKEN || state === DONE || state === DONE_R || state === CHANNEL_CLOSED -> return true
+                state === CELL_BUFFERED || state === BROKEN || state === DONE || state === CHANNEL_CLOSED -> return true
                 state === RESUMING_R -> if (segm.casState(i, state, RESUMING_R_EB)) return true
                 state === INTERRUPTED -> {
                     if (b >= receivers.value) return false
@@ -1130,7 +1130,7 @@ internal open class BufferedChannel<E>(
                 while (true) {
                     val state = segm.getState(i)
                     when {
-                        state === CELL_BUFFERED || state === CELL_BUFFERED2 -> if (segm.casState(i, state, CHANNEL_CLOSED)) {
+                        state === CELL_BUFFERED -> if (segm.casState(i, state, CHANNEL_CLOSED)) {
                             if (onUndeliveredElement != null) {
                                 undeliveredElementException = onUndeliveredElement.callUndeliveredElementCatchingException(segm.retrieveElement(i), undeliveredElementException)
                             }
@@ -1451,7 +1451,7 @@ internal open class BufferedChannel<E>(
                         return true
                     }
                 }
-                state === CELL_BUFFERED || state === CELL_BUFFERED2 -> {
+                state === CELL_BUFFERED -> {
                     return false
                 }
                 state === INTERRUPTED -> {
@@ -1461,7 +1461,6 @@ internal open class BufferedChannel<E>(
                 state === INTERRUPTED_R -> return true
                 state === CHANNEL_CLOSED -> return true
                 state === DONE -> return true
-                state === DONE_R -> return true
                 state === BROKEN -> return true
                 state === RESUMING_EB || state === RESUMING_R_EB -> continue // spin-wait
                 else -> return receivers.value != r
@@ -1567,27 +1566,15 @@ internal open class BufferedChannel<E>(
  */
 internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: Int) :
     Segment<ChannelSegment<E>>(id, prev, pointers) {
-    private val data = atomicArrayOfNulls<Any?>(SEGMENT_SIZE * 2) // 2 registers per slot
+    private val data = atomicArrayOfNulls<Any?>(SEGMENT_SIZE * 2) // 2 registers per slot: state + element
+    override val numberOfSlots: Int get() = SEGMENT_SIZE
 
-    override val maxSlots: Int get() = SEGMENT_SIZE
-
-    private inline fun getElement(index: Int): Any? = data[index * 2].value
-    private inline fun setElementLazy(index: Int, value: Any?) {
-        data[index * 2].lazySet(value)
-    }
-
-    inline fun getState(index: Int): Any? = data[index * 2 + 1].value
-    inline fun setState(index: Int, value: Any?) {
-        data[index * 2 + 1].value = value
-    }
-    inline fun setStateLazy(index: Int, value: Any?) {
-        data[index * 2 + 1].lazySet(value)
-    }
-
-    inline fun casState(index: Int, from: Any?, to: Any?) = data[index * 2 + 1].compareAndSet(from, to)
+    // ##########################################
+    // # Manipulation with the Element Register #
+    // ##########################################
 
     fun storeElement(i: Int, element: E) {
-        val element: Any = if (element === null) NULL_ELEMENTT else element
+        val element: Any = if (element === null) NULL_ELEMENT else element
         setElementLazy(i, element)
     }
 
@@ -1595,19 +1582,45 @@ internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: I
 
     fun readElement(i: Int): E {
         val element = getElement(i)
-        return (if (element === NULL_ELEMENTT) null else element) as E
+        return (if (element === NULL_ELEMENT) null else element) as E
     }
 
     fun cleanElement(i: Int) {
         setElementLazy(i, null)
     }
 
+    private inline fun getElement(index: Int): Any? = data[index * 2].value
+
+    private inline fun setElementLazy(index: Int, value: Any?) {
+        data[index * 2].lazySet(value)
+    }
+
+    // ########################################
+    // # Manipulation with the State Register #
+    // ########################################
+
+    inline fun getState(index: Int): Any? = data[index * 2 + 1].value
+
+    inline fun setState(index: Int, value: Any?) {
+        data[index * 2 + 1].value = value
+    }
+
+    inline fun setStateLazy(index: Int, value: Any?) {
+        data[index * 2 + 1].lazySet(value)
+    }
+
+    inline fun casState(index: Int, from: Any?, to: Any?) = data[index * 2 + 1].compareAndSet(from, to)
+
+    // ########################
+    // # Cancellation Support #
+    // ########################
+
     fun onCancellation(i: Int, onUndeliveredElement: OnUndeliveredElement<E>? = null, context: CoroutineContext? = null, expectedWaiter: Any? = null) {
         val element = getElement(i)
         val waiter = data[i * 2 + 1].getAndUpdate {
             if (it === RESUMING_R || it === RESUMING_EB || it === RESUMING_R_EB ||
                 it === INTERRUPTED || it === INTERRUPTED_R || it === INTERRUPTED_EB ||
-                it === CHANNEL_CLOSED || it is WaiterEB ||  it === CELL_BUFFERED || it === CELL_BUFFERED2
+                it === CHANNEL_CLOSED || it is WaiterEB ||  it === CELL_BUFFERED
             ) return
             INTERRUPTED
         }
@@ -1641,8 +1654,6 @@ private val BUFFERING = Symbol("BUFFERING")
 @SharedImmutable
 private val CELL_BUFFERED = Symbol("CELL_BUFFERED")
 @SharedImmutable
-private val CELL_BUFFERED2 = Symbol("BUFFERED2")
-@SharedImmutable
 private val RESUMING_R = Symbol("RESUMING_R")
 @SharedImmutable
 private val RESUMING_EB = Symbol("RESUMING_EB")
@@ -1652,8 +1663,6 @@ private val RESUMING_R_EB = Symbol("RESUMING_R_EB")
 private val BROKEN = Symbol("BROKEN")
 @SharedImmutable
 private val DONE = Symbol("DONE")
-@SharedImmutable
-private val DONE_R = Symbol("DONE_R")
 @SharedImmutable
 private val INTERRUPTED = Symbol("INTERRUPTED")
 @SharedImmutable
@@ -1679,11 +1688,11 @@ private val NO_CLOSE_CAUSE = Symbol("NO_CLOSE_CAUSE")
 
 // Senders should store this value when the element is null
 @SharedImmutable
-private val NULL_ELEMENTT = Symbol("NULL")
+private val NULL_ELEMENT = Symbol("NULL")
 @Suppress("UNCHECKED_CAST")
-private fun <E> Any.asElementt(): E = if (this === NULL_ELEMENTT) null as E
+private fun <E> Any.asElementt(): E = if (this === NULL_ELEMENT) null as E
                                       else this as E
-private fun Any?.elementAsState(): Any = this ?: NULL_ELEMENTT
+private fun Any?.elementAsState(): Any = this ?: NULL_ELEMENT
 
 // Special return values
 @SharedImmutable
