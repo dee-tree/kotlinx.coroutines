@@ -179,7 +179,7 @@ internal open class BufferedChannel<E>(
     ) = invokeOnCancellation {
         // Clean the cell on suspension and invoke `onUndeliveredElement(..)`
         // if the continuation is still stored in the cell.
-        segment.onCancellation(i, onUndeliveredElement, context, this)
+        segment.onCancellation(i, onUndeliveredElement, context)
     }
     private fun onClosedSendOnNoWaiterSuspend(element: E, cont: CancellableContinuation<Unit>) {
         onUndeliveredElement?.callUndeliveredElement(element, cont.context)
@@ -336,7 +336,7 @@ internal open class BufferedChannel<E>(
             curState === null -> {
                 segment.storeElement(index, element)
                 if (bufferOrRendezvousSend(s)) {
-                    if (segment.casState(index, null, CELL_BUFFERED)) {
+                    if (segment.casState(index, null, BUFFERED)) {
                         return RESULT_BUFFERED
                     }
                 } else {
@@ -392,7 +392,7 @@ internal open class BufferedChannel<E>(
                     // Otherwise, try to store the specified waiter in the cell.
                     if (bufferOrRendezvousSend(s)) {
                         // Move the cell state to BUFFERED.
-                        if (segment.casState(index, null, CELL_BUFFERED)) {
+                        if (segment.casState(index, null, BUFFERED)) {
                             // The element has been successfully buffered, finish.
                             return if (s < receivers.value) RESULT_RENDEZVOUS else RESULT_BUFFERED
                         }
@@ -411,9 +411,9 @@ internal open class BufferedChannel<E>(
                 // The buffer has been expanded and this cell
                 // is covered by the buffer. Therefore, the algorithm
                 // tries to buffer the element.
-                state === BUFFERING -> {
+                state === SHOULD_BUFFER -> {
                     // Move the state to BUFFERED.
-                    if (segment.casState(index, state, CELL_BUFFERED))
+                    if (segment.casState(index, state, BUFFERED))
                         return if (s < receivers.value) RESULT_RENDEZVOUS else RESULT_BUFFERED
                 }
                 // Fail if the cell is broken by a concurrent receiver,
@@ -665,14 +665,14 @@ internal open class BufferedChannel<E>(
     ): Any? {
         val curState = segment.getState(i)
         when {
-            curState === CELL_BUFFERED -> {
+            curState === BUFFERED -> {
                 if (segment.casState(i, curState, DONE)) {
                     val element = segment.retrieveElement(i)
                     expandBuffer()
                     return element
                 }
             }
-            curState === CELL_BUFFERED -> {
+            curState === BUFFERED -> {
                 if (segment.casState(i, curState, DONE)) {
                     val element = segment.retrieveElement(i)
                     expandBuffer()
@@ -713,7 +713,7 @@ internal open class BufferedChannel<E>(
         while (true) {
             val state = segment.getState(i)
             when {
-                state === null || state === BUFFERING -> {
+                state === null || state === SHOULD_BUFFER -> {
                     val sendersAndCloseStatusCur = sendersAndCloseStatus.value
                     if (sendersAndCloseStatusCur.isClosedForReceive0) {
                         segment.casState(i, state, CHANNEL_CLOSED)
@@ -732,14 +732,14 @@ internal open class BufferedChannel<E>(
                         }
                     }
                 }
-                state === CELL_BUFFERED -> {
+                state === BUFFERED -> {
                     if (segment.casState(i, state, DONE)) {
                         val element = segment.retrieveElement(i)
                         expandBuffer()
                         return element
                     }
                 }
-                state === CELL_BUFFERED -> {
+                state === BUFFERED -> {
                     if (segment.casState(i, state, DONE)) {
                         val element = segment.retrieveElement(i)
                         expandBuffer()
@@ -856,9 +856,9 @@ internal open class BufferedChannel<E>(
             val state = segm.getState(i)
             when {
                 state === null -> {
-                    if (segm.casState(i, state, BUFFERING)) return true
+                    if (segm.casState(i, state, SHOULD_BUFFER)) return true
                 }
-                state === CELL_BUFFERED || state === BROKEN || state === DONE || state === CHANNEL_CLOSED -> return true
+                state === BUFFERED || state === BROKEN || state === DONE || state === CHANNEL_CLOSED -> return true
                 state === RESUMING_R -> if (segm.casState(i, state, RESUMING_R_EB)) return true
                 state === INTERRUPTED -> {
                     if (b >= receivers.value) return false
@@ -872,7 +872,7 @@ internal open class BufferedChannel<E>(
                     } else {
                         if (segm.casState(i, state, RESUMING_EB)) {
                             return if (state.tryResumeSender(segm, i)) {
-                                segm.setState(i, CELL_BUFFERED)
+                                segm.setState(i, BUFFERED)
                                 true
                             } else {
                                 segm.setState(i, INTERRUPTED)
@@ -920,7 +920,7 @@ internal open class BufferedChannel<E>(
             onRendezvousOrBuffered = { select.selectInRegistrationPhase(Unit) },
             onSuspend = { segm, i ->
                 select.disposeOnCompletion {
-                    segm.onCancellation(i, onUndeliveredElement, select.context, select)
+                    segm.onCancellation(i, onUndeliveredElement, select.context)
                 }
             },
             onClosed = {
@@ -1048,12 +1048,17 @@ internal open class BufferedChannel<E>(
     }
 
     private fun closeQueue(): ChannelSegment<E> {
-        var segm = bufferEndSegment.value
+        // Choose the last segment.
+        var lastSegment = bufferEndSegment.value
         sendSegment.value.let {
-            val segm0 = segm
-            if (segm0 == null || it.id > segm0.id) segm = it
+            if (it.id > lastSegment.id) lastSegment = it
         }
-        return segm!!.close()
+        receiveSegment.value.let {
+            if (it.id > lastSegment.id) lastSegment = it
+        }
+        // Close the linked list of segment for new segment addition
+        // and return the last segment at the point of closing.
+        return lastSegment.close()
     }
 
     private fun invokeCloseHandler() {
@@ -1130,14 +1135,14 @@ internal open class BufferedChannel<E>(
                 while (true) {
                     val state = segm.getState(i)
                     when {
-                        state === CELL_BUFFERED -> if (segm.casState(i, state, CHANNEL_CLOSED)) {
+                        state === BUFFERED -> if (segm.casState(i, state, CHANNEL_CLOSED)) {
                             if (onUndeliveredElement != null) {
                                 undeliveredElementException = onUndeliveredElement.callUndeliveredElementCatchingException(segm.retrieveElement(i), undeliveredElementException)
                             }
                             segm.onCancellation(i)
                             break
                         }
-                        state === BUFFERING || state === null -> if (segm.casState(i, state, CHANNEL_CLOSED)) {
+                        state === SHOULD_BUFFER || state === null -> if (segm.casState(i, state, CHANNEL_CLOSED)) {
                             segm.onCancellation(i)
                             break
                         }
@@ -1170,7 +1175,7 @@ internal open class BufferedChannel<E>(
                 cell@while (true) {
                     val state = segm.getState(i)
                     when {
-                        state === null || state === BUFFERING -> {
+                        state === null || state === SHOULD_BUFFER -> {
                             if (segm.casState(i, state, CHANNEL_CLOSED)) break@cell
                         }
                         state is WaiterEB -> {
@@ -1233,7 +1238,7 @@ internal open class BufferedChannel<E>(
 
     internal open inner class BufferedChannelIterator : ChannelIterator<E>, CancelHandler(), Waiter {
         @JvmField
-        var receiveResult: Any? = null
+        var receiveResult: Any? = NO_RECEIVE_RESULT
         @JvmField
         var cont: CancellableContinuation<Boolean>? = null
 
@@ -1248,7 +1253,7 @@ internal open class BufferedChannel<E>(
         override suspend fun hasNext(): Boolean = receiveImpl(
             waiter = null,
             onRendezvous = { element ->
-                this.receiveResult = element.elementAsState()
+                this.receiveResult = element
                 onReceiveSynchronizationCompletion()
                 true
             },
@@ -1305,13 +1310,14 @@ internal open class BufferedChannel<E>(
 
         @Suppress("UNCHECKED_CAST")
         override fun next(): E {
-            // Read the already received result, or null if [hasNext] has not been invoked yet.
-            val result = receiveResult ?: error("`hasNext()` has not been invoked")
-            receiveResult = null
+            // Read the already received result, or [NO_RECEIVE_RESULT] if [hasNext] has not been invoked yet.
+            check(receiveResult !== NO_RECEIVE_RESULT) { "`hasNext()` has not been invoked" }
+            val result = receiveResult
+            receiveResult = NO_RECEIVE_RESULT
             // Is this channel closed?
             if (result is ClosedChannel) throw recoverStackTrace(receiveException(result.cause))
             // Return the element.
-            return result.asElementt()
+            return result as E
         }
 
         fun tryResumeHasNext(element: E): Boolean {
@@ -1445,13 +1451,13 @@ internal open class BufferedChannel<E>(
         while (true) {
             val state = segm.getState(i)
             when {
-                state === null || state === BUFFERING -> {
+                state === null || state === SHOULD_BUFFER -> {
                     if (segm.casState(i, state, BROKEN)) {
                         expandBuffer()
                         return true
                     }
                 }
-                state === CELL_BUFFERED -> {
+                state === BUFFERED -> {
                     return false
                 }
                 state === INTERRUPTED -> {
@@ -1533,7 +1539,7 @@ internal open class BufferedChannel<E>(
         while (true) {
             repeat(SEGMENT_SIZE) { i ->
                 val w = cur.getState(i)
-                val e = cur.readElement(i)
+                val e = cur.getElement(i)
                 val wString = when (w) {
                     is CancellableContinuation<*> -> "cont"
                     is SelectInstance<*> -> "select"
@@ -1564,8 +1570,7 @@ internal open class BufferedChannel<E>(
  * to update [BufferedChannel.sendSegment], [BufferedChannel.receiveSegment],
  * and [BufferedChannel.bufferEndSegment] correctly.
  */
-internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: Int) :
-    Segment<ChannelSegment<E>>(id, prev, pointers) {
+internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: Int) : Segment<ChannelSegment<E>>(id, prev, pointers) {
     private val data = atomicArrayOfNulls<Any?>(SEGMENT_SIZE * 2) // 2 registers per slot: state + element
     override val numberOfSlots: Int get() = SEGMENT_SIZE
 
@@ -1574,22 +1579,16 @@ internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: I
     // ##########################################
 
     fun storeElement(i: Int, element: E) {
-        val element: Any = if (element === null) NULL_ELEMENT else element
         setElementLazy(i, element)
     }
 
-    fun retrieveElement(i: Int): E = readElement(i).also { setElementLazy(i, null) }
-
-    fun readElement(i: Int): E {
-        val element = getElement(i)
-        return (if (element === NULL_ELEMENT) null else element) as E
-    }
+    fun retrieveElement(i: Int): E = getElement(i).also { setElementLazy(i, null) }
 
     fun cleanElement(i: Int) {
         setElementLazy(i, null)
     }
 
-    private inline fun getElement(index: Int): Any? = data[index * 2].value
+    inline fun getElement(index: Int) = data[index * 2].value as E
 
     private inline fun setElementLazy(index: Int, value: Any?) {
         data[index * 2].lazySet(value)
@@ -1615,18 +1614,19 @@ internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: I
     // # Cancellation Support #
     // ########################
 
-    fun onCancellation(i: Int, onUndeliveredElement: OnUndeliveredElement<E>? = null, context: CoroutineContext? = null, expectedWaiter: Any? = null) {
-        val element = getElement(i)
-        val waiter = data[i * 2 + 1].getAndUpdate {
-            if (it === RESUMING_R || it === RESUMING_EB || it === RESUMING_R_EB ||
-                it === INTERRUPTED || it === INTERRUPTED_R || it === INTERRUPTED_EB ||
-                it === CHANNEL_CLOSED || it is WaiterEB ||  it === CELL_BUFFERED
-            ) return
+    fun onCancellation(i: Int, onUndeliveredElement: OnUndeliveredElement<E>? = null, context: CoroutineContext? = null) {
+        // Update the cell state first.
+        data[i * 2 + 1].update {
+            // Is this cell already processed?
+            if (it !is Waiter) return
+            // Replace the stored waiter with the INTERRUPTED state.
             INTERRUPTED
         }
-        if (waiter === expectedWaiter) {
-            onUndeliveredElement?.callUndeliveredElement(element as E, context!!)
-        }
+        // Call `onUndeliveredElement` if required.
+        onUndeliveredElement?.callUndeliveredElement(getElement(i), context!!)
+        // Clean the element slot.
+        cleanElement(i)
+        // Inform the segment that one more slot has been cleaned.
         onSlotCleaned()
     }
 }
@@ -1636,7 +1636,10 @@ private val NULL_SEGMENT = createSegment<Any?>(-1, null)
 // Number of cells in each segment
 private val SEGMENT_SIZE = systemProp("kotlinx.coroutines.bufferedChannel.segmentSize", 32)
 
-
+/**
+ * Tries to resume this continuation with the specified
+ * value. Returns `true` on success and `false` on failure.
+ */
 private fun <T> CancellableContinuation<T>.tryResume0(
     value: T,
     onCancellation: ((cause: Throwable) -> Unit)? = null
@@ -1648,13 +1651,28 @@ private fun <T> CancellableContinuation<T>.tryResume0(
         } else false
     }
 
-// Cell states
+/*
+  Cell states. The initial "empty" state is represented
+  with `null`, and waiting operations are represented with
+  [Waiter] instances. Please see the [BufferedChannel]
+  documentation for more details.
+ */
+@SharedImmutable // The cell stores a buffered element.
+private val BUFFERED = Symbol("BUFFERED")
+// Concurrent `expandBuffer(..)` can inform the
+// upcoming sender that it should buffer the element.
 @SharedImmutable
-private val BUFFERING = Symbol("BUFFERING")
-@SharedImmutable
-private val CELL_BUFFERED = Symbol("CELL_BUFFERED")
+private val SHOULD_BUFFER = Symbol("SHOULD_BUFFER")
+// Indicates that a receiver (R suffix) is resuming
+// the suspended sender; after that, it should update
+// the state to either `DONE` (on success) or
+// `INTERRUPTED_R` (on failure).
 @SharedImmutable
 private val RESUMING_R = Symbol("RESUMING_R")
+// Indicates that `expandBuffer(..)` is resuming the
+// suspended sender; after that, it should update the
+// state to either `BUFFERED` (on success) or
+// `INTERRUPTED_EB` (on failure).
 @SharedImmutable
 private val RESUMING_EB = Symbol("RESUMING_EB")
 @SharedImmutable
@@ -1669,32 +1687,38 @@ private val INTERRUPTED = Symbol("INTERRUPTED")
 private val INTERRUPTED_R = Symbol("INTERRUPTED_R")
 @SharedImmutable
 private val INTERRUPTED_EB = Symbol("INTERRUPTED_EB")
+// When the cell is already covered by both sender and
+// receiver, the `expandBuffer(..)` operation cannot
+// distinguish whether sender or receiver is stored
+// in the cell. Thus, it wraps the waiter with this
+// descriptor, informing the receiver that it should
+// complete the `expandBuffer(..)` procedure if it is
+// a sender that it stored as a waiter, and its resumption
+// fails.
 private class WaiterEB(@JvmField val waiter: Any) {
     override fun toString() = "ExpandBufferDesc($waiter)"
 }
+// Indicates that the channel is already closed,
+// and no more operation should not touch this cell.
+@SharedImmutable
+internal val CHANNEL_CLOSED = Symbol("CHANNEL_CLOSED")
+
+
+/**
+ * To distinguish suspended [BufferedChannel.receive] and
+ * [BufferedChannel.receiveCatching] operation, the last
+ * is wrapped with this class.
+ */
 private class ReceiveCatching<E>(
     @JvmField val cont: CancellableContinuation<ChannelResult<E>>
 ) : Waiter
 
-// Special values for `CLOSE_HANDLER`
-@SharedImmutable
-private val CLOSE_HANDLER_CLOSED = Symbol("CLOSE_HANDLER_CLOSED")
-@SharedImmutable
-private val CLOSE_HANDLER_INVOKED = Symbol("CLOSE_HANDLER_INVOKED")
-
-// Specifies the absence of close cause
-@SharedImmutable
-private val NO_CLOSE_CAUSE = Symbol("NO_CLOSE_CAUSE")
-
-// Senders should store this value when the element is null
-@SharedImmutable
-private val NULL_ELEMENT = Symbol("NULL")
-@Suppress("UNCHECKED_CAST")
-private fun <E> Any.asElementt(): E = if (this === NULL_ELEMENT) null as E
-                                      else this as E
-private fun Any?.elementAsState(): Any = this ?: NULL_ELEMENT
-
-// Special return values
+/*
+  Internal results for [BufferedChannel.updateCellReceive].
+  On successful rendezvous with waiting sender or
+  buffered element retrieval, the corresponding element
+  is returned as result of [BufferedChannel.updateCellReceive].
+ */
 @SharedImmutable
 private val SUSPEND = Symbol("SUSPEND")
 @SharedImmutable
@@ -1702,20 +1726,45 @@ private val NO_WAITER = Symbol("NO_WAITER")
 @SharedImmutable
 private val FAILED = Symbol("FAILED")
 
-@SharedImmutable
-internal val CHANNEL_CLOSED = Symbol("CHANNEL_CLOSED")
-
+/*
+  Internal results for [BufferedChannel.updateCellSend]
+ */
 private const val RESULT_RENDEZVOUS = 0
 private const val RESULT_BUFFERED = 1
 private const val RESULT_SUSPEND = 2
 private const val RESULT_NO_WAITER = 3
 private const val RESULT_FAILED = 4
 
+/**
+ * Special value for [BufferedChannel.BufferedChannelIterator.receiveResult]
+ * that indicates the absence of pre-received result.
+ */
+private val NO_RECEIVE_RESULT = Symbol("NO_RECEIVE_RESULT")
+
+
+/*
+  The channel closing statuses. The transition scheme is the following:
+    +--------+   +----------------------+   +-----------+
+    | ACTIVE |-->| CANCELLATION_STARTED |-->| CANCELLED |
+    +--------+   +----------------------+   +-----------+
+        |                                         ^
+        |             +--------+                  |
+        +------------>| CLOSED |------------------+
+                      +--------+
+  We need `CANCELLATION_STARTED` to synchronize
+  concurrent closing and cancellation.
+ */
 private const val CLOSE_STATUS_ACTIVE = 0
 private const val CLOSE_STATUS_CANCELLATION_STARTED = 1
 private const val CLOSE_STATUS_CLOSED = 2
 private const val CLOSE_STATUS_CANCELLED = 3
 
+/*
+  The `senders` counter and the channel closing status
+  are stored in a single 64-bit register to save the space
+  and reduce the number of reads in sending operations.
+  The code below encapsulates the required bit arithmetics.
+ */
 private const val CLOSE_STATUS_SHIFT = 60
 private const val COUNTER_MASK = (1L shl CLOSE_STATUS_SHIFT) - 1
 private inline val Long.counter get() = this and COUNTER_MASK
@@ -1723,5 +1772,26 @@ private inline val Long.closeStatus: Int get() = (this shr CLOSE_STATUS_SHIFT).t
 private inline fun constructSendersAndCloseStatus(counter: Long, closeStatus: Int): Long =
     (closeStatus.toLong() shl CLOSE_STATUS_SHIFT) + counter
 
+/*
+
+ */
+@SharedImmutable
+private val CLOSE_HANDLER_CLOSED = Symbol("CLOSE_HANDLER_CLOSED")
+@SharedImmutable
+private val CLOSE_HANDLER_INVOKED = Symbol("CLOSE_HANDLER_INVOKED")
+
+/**
+ * Specifies the absence of closing cause, stored in [BufferedChannel.closeCause].
+ * When the channel is closed or cancelled without exception, this [NO_CLOSE_CAUSE]
+ * marker should be replaced with `null`.
+ */
+@SharedImmutable
+private val NO_CLOSE_CAUSE = Symbol("NO_CLOSE_CAUSE")
+
+/**
+ * All waiters, such as [CancellableContinuationImpl], [SelectInstance], and
+ * [BufferedChannel.BufferedChannelIterator], should be marked with this interface
+ * to make the code faster and easier to read.
+ */
 @InternalCoroutinesApi
 public interface Waiter
