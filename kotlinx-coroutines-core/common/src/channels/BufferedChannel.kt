@@ -1739,6 +1739,7 @@ private const val RESULT_FAILED = 4
  * Special value for [BufferedChannel.BufferedChannelIterator.receiveResult]
  * that indicates the absence of pre-received result.
  */
+@SharedImmutable
 private val NO_RECEIVE_RESULT = Symbol("NO_RECEIVE_RESULT")
 
 
