@@ -33,23 +33,16 @@ internal open class BufferedChannel<E>(
     }
 
     /*
-     * Instead of storing the capacity, the implementation keeps an information on whether
-     * this channel is rendezvous or unlimited. In these cases, the [bufferEnd] and
-     * [bufferEndSegment] are ignored, and [expandBuffer] is never invoked.
-     *
-     * TODO: store these flags in the senders counter
-     */
-    private val rendezvous = capacity == Channel.RENDEZVOUS
-    private val unlimited = capacity == Channel.UNLIMITED
-
-    /*
-     * The counters and the segments for send, receive, and buffer expansion operations.
-     * The counters are incremented in the  beginning of the corresponding operation;
-     * thus, acquiring a unique (for the operation type) cell to process.
+      The counters and the segments for send, receive, and buffer expansion operations.
+      The counters are incremented in the  beginning of the corresponding operation;
+      thus, acquiring a unique (for the operation type) cell to process.
      */
     private val sendersAndCloseStatus = atomic(0L)
     private val receivers = atomic(0L)
-    private val bufferEnd = atomic(capacity.toLong())
+    private val bufferEnd = atomic(initialBufferEnd(capacity))
+
+    private val rendezvousOrUnlimited
+        get() = bufferEnd.value.let { it == BUFFER_END_RENDEZVOUS || it == BUFFER_END_UNLIMITED }
 
     private val sendSegment: AtomicRef<ChannelSegment<E>>
     private val receiveSegment: AtomicRef<ChannelSegment<E>>
@@ -59,7 +52,7 @@ internal open class BufferedChannel<E>(
         val s = ChannelSegment<E>(0, null, 3)
         sendSegment = atomic(s)
         receiveSegment = atomic(s)
-        bufferEndSegment = atomic(if (rendezvous || unlimited) (NULL_SEGMENT as ChannelSegment<E>) else s)
+        bufferEndSegment = atomic(if (rendezvousOrUnlimited) (NULL_SEGMENT as ChannelSegment<E>) else s)
     }
 
     // #########################
@@ -75,6 +68,16 @@ internal open class BufferedChannel<E>(
      * independently on whether it is caused by rendezvous, cancellation, or channel closing.
      */
     protected open fun onReceiveDequeued() {}
+    /**
+     * This function is invoked when the receiving operation ([receive], [tryReceive],
+     * [BufferedChannelIterator.hasNext], etc.) finishes its synchronization -- either
+     * completes due to element retrieving or discovering this channel in the closed state,
+     * or suspends if this channel is empty and not closed. We use this function to
+     * protect all receive operations with global lock, by acquiring the lock in the
+     * beginning of each receiving operation and releasing it when the synchronization
+     * completes, via this function.
+     */
+    protected open fun onReceiveSynchronizationCompletion() {}
 
     override fun trySend(element: E): ChannelResult<Unit> {
         // Do not try to send the value when the plain `send(e)` operation should suspend.
@@ -203,7 +206,7 @@ internal open class BufferedChannel<E>(
         return !bufferOrRendezvousSend(curSendersAndCloseStatus.counter)
     }
     private fun bufferOrRendezvousSend(curSenders: Long): Boolean =
-        unlimited || curSenders < receivers.value || (!rendezvous && curSenders < bufferEnd.value)
+         curSenders < bufferEnd.value || curSenders < receivers.value
     /**
      * Checks whether a [send] invocation is bound to suspend if it is called
      * with the current counter and closing status values. See [shouldSendSuspend].
@@ -823,28 +826,45 @@ internal open class BufferedChannel<E>(
     }
 
     private fun expandBuffer() {
-        if (rendezvous || unlimited) return
-        var segm = bufferEndSegment.value!!
+        if (rendezvousOrUnlimited) return
+        var segment = bufferEndSegment.value
         try_again@ while (true) {
             val b = bufferEnd.getAndIncrement()
             val s = sendersAndCloseStatus.value.counter
             val id = b / SEGMENT_SIZE
             if (s <= b) {
-                findSegmentBuffer(id, segm) // to avoid memory leaks
+                if (segment.id < id) {
+                    while (true) {
+                        val ss = findSegmentBufferOrLast(id, segment)
+                        if (bufferEndSegment.moveForward(ss)) return
+                    }
+                } // to avoid memory leaks
                 return
             }
             val i = (b % SEGMENT_SIZE).toInt()
-            if (segm.id != id) {
-                segm = findSegmentBuffer(id, segm).let {
+            if (segment.id != id) {
+                segment = findSegmentBuffer(id, segment).let {
                     if (it.isClosed) return else it.segment
                 }
             }
-            if (segm.id != id) {
-                bufferEnd.compareAndSet(b + 1, segm.id * SEGMENT_SIZE)
+            if (segment.id != id) {
+                if (receivers.value > b) return
+                bufferEnd.compareAndSet(b + 1, segment.id * SEGMENT_SIZE)
                 continue@try_again
             }
-            if (updateCellExpandBuffer(segm, i, b)) return
+            if (updateCellExpandBuffer(segment, i, b)) return
         }
+    }
+
+    private fun findSegmentBufferOrLast(id: Long, startFrom: ChannelSegment<E>): ChannelSegment<E> {
+        var cur: ChannelSegment<E> = startFrom
+        while (cur.id < id) {
+            cur = cur.next ?: break
+        }
+        while (cur.removed) {
+            cur = cur.next ?: break
+        }
+        return cur
     }
 
     private fun updateCellExpandBuffer(
@@ -948,9 +968,7 @@ internal open class BufferedChannel<E>(
         )
     }
 
-    protected open fun onReceiveSynchronizationCompletion() {}
-
-    internal fun processResultSelectSend(ignoredParam: Any?, selectResult: Any?): Any? =
+    private fun processResultSelectSend(ignoredParam: Any?, selectResult: Any?): Any? =
         if (selectResult === CHANNEL_CLOSED) throw sendException(getCloseCause())
         else this
 
@@ -969,8 +987,8 @@ internal open class BufferedChannel<E>(
         else success(selectResult as E)
 
     private val onUndeliveredElementReceiveCancellationConstructor: OnCancellationConstructor? = onUndeliveredElement?.let {
-        { select: SelectInstance<*>, ignoredParam: Any?, element: Any? ->
-            { cause: Throwable -> if (element !== CHANNEL_CLOSED) onUndeliveredElement.callUndeliveredElement(element as E, select.context) }
+        { select: SelectInstance<*>, _: Any?, element: Any? ->
+            { if (element !== CHANNEL_CLOSED) onUndeliveredElement.callUndeliveredElement(element as E, select.context) }
         }
     }
 
@@ -1387,8 +1405,6 @@ internal open class BufferedChannel<E>(
 
     @ExperimentalCoroutinesApi
     override val isEmpty: Boolean get() =
-        // TODO: is it linearizable? If so,
-        // TODO: I have no idea why.
         if (sendersAndCloseStatus.value.isClosedForReceive0) false
         else if (hasElements()) false
         else !sendersAndCloseStatus.value.isClosedForReceive0
@@ -1486,7 +1502,7 @@ internal open class BufferedChannel<E>(
             } else {
                 val segm = it.segment
                 if (segm.id != id) {
-                    check(segm.id > id)
+                    assert { segm.id > id }
                     updateSendersIfLower(segm.id * SEGMENT_SIZE)
                     null
                 } else segm
@@ -1578,17 +1594,17 @@ internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: I
     // # Manipulation with the Element Register #
     // ##########################################
 
-    fun storeElement(i: Int, element: E) {
-        setElementLazy(i, element)
-    }
-
-    fun retrieveElement(i: Int): E = getElement(i).also { setElementLazy(i, null) }
-
-    fun cleanElement(i: Int) {
-        setElementLazy(i, null)
+    inline fun storeElement(index: Int, element: E) {
+        setElementLazy(index, element)
     }
 
     inline fun getElement(index: Int) = data[index * 2].value as E
+
+    inline fun retrieveElement(index: Int): E = getElement(index).also { cleanElement(index) }
+
+    inline fun cleanElement(index: Int) {
+        setElementLazy(index, null)
+    }
 
     private inline fun setElementLazy(index: Int, value: Any?) {
         data[index * 2].lazySet(value)
@@ -1614,18 +1630,18 @@ internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: I
     // # Cancellation Support #
     // ########################
 
-    fun onCancellation(i: Int, onUndeliveredElement: OnUndeliveredElement<E>? = null, context: CoroutineContext? = null) {
+    fun onCancellation(index: Int, onUndeliveredElement: OnUndeliveredElement<E>? = null, context: CoroutineContext? = null) {
         // Update the cell state first.
-        data[i * 2 + 1].update {
+        data[index * 2 + 1].update {
             // Is this cell already processed?
             if (it !is Waiter) return
             // Replace the stored waiter with the INTERRUPTED state.
             INTERRUPTED
         }
         // Call `onUndeliveredElement` if required.
-        onUndeliveredElement?.callUndeliveredElement(getElement(i), context!!)
+        onUndeliveredElement?.callUndeliveredElement(getElement(index), context!!)
         // Clean the element slot.
-        cleanElement(i)
+        cleanElement(index)
         // Inform the segment that one more slot has been cleaned.
         onSlotCleaned()
     }
@@ -1633,7 +1649,9 @@ internal class ChannelSegment<E>(id: Long, prev: ChannelSegment<E>?, pointers: I
 private fun <E> createSegment(id: Long, prev: ChannelSegment<E>?) = ChannelSegment(id, prev, 0)
 @SharedImmutable
 private val NULL_SEGMENT = createSegment<Any?>(-1, null)
-// Number of cells in each segment
+/**
+ * Number of cells in each segment.
+ */
 private val SEGMENT_SIZE = systemProp("kotlinx.coroutines.bufferedChannel.segmentSize", 32)
 
 /**
@@ -1650,6 +1668,19 @@ private fun <T> CancellableContinuation<T>.tryResume0(
             true
         } else false
     }
+
+/*
+  When the channel is rendezvouze or unlimited, the `bufferEnd` counter
+  should be initialized with the corresponding value below and never change.
+  In this case, the `expandBuffer(..)` operation does nothing.
+ */
+private const val BUFFER_END_RENDEZVOUS = 0L // no buffer
+private const val BUFFER_END_UNLIMITED = Long.MAX_VALUE // infinite buffer
+private fun initialBufferEnd(capacity: Int): Long = when (capacity) {
+    Channel.RENDEZVOUS -> BUFFER_END_RENDEZVOUS
+    Channel.UNLIMITED -> BUFFER_END_UNLIMITED
+    else -> capacity.toLong()
+}
 
 /*
   Cell states. The initial "empty" state is represented
@@ -1675,29 +1706,45 @@ private val RESUMING_R = Symbol("RESUMING_R")
 // `INTERRUPTED_EB` (on failure).
 @SharedImmutable
 private val RESUMING_EB = Symbol("RESUMING_EB")
+// TODO
 @SharedImmutable
 private val RESUMING_R_EB = Symbol("RESUMING_R_EB")
 @SharedImmutable
 private val BROKEN = Symbol("BROKEN")
+// When the element is successfully transferred (possibly,
+// through buffering), the cell moves to `DONE` state.
 @SharedImmutable
 private val DONE = Symbol("DONE")
+// When the waiter is cancelled, it moves the cell to
+// `INTERRUPTED` state; thus, informing other parties
+// that may come to the cell and avoiding memory leaks.
 @SharedImmutable
 private val INTERRUPTED = Symbol("INTERRUPTED")
+// TODO
 @SharedImmutable
 private val INTERRUPTED_R = Symbol("INTERRUPTED_R")
-@SharedImmutable
-private val INTERRUPTED_EB = Symbol("INTERRUPTED_EB")
 // When the cell is already covered by both sender and
-// receiver, the `expandBuffer(..)` operation cannot
-// distinguish whether sender or receiver is stored
-// in the cell. Thus, it wraps the waiter with this
-// descriptor, informing the receiver that it should
-// complete the `expandBuffer(..)` procedure if it is
-// a sender that it stored as a waiter, and its resumption
-// fails.
+// receiver (`sender` and `receivers` counters are greater
+// than the cell number), the `expandBuffer(..)` procedure
+// cannot distinguish which kind of operation is stored
+// in the cell. Thus, it wraps the waiter with this descriptor,
+// informing the possibly upcoming receiver that it should
+// complete the `expandBuffer(..)` procedure if the waiter
+// stored in the cell is sender. In turn, senders ignore this
+// information.
 private class WaiterEB(@JvmField val waiter: Any) {
     override fun toString() = "ExpandBufferDesc($waiter)"
 }
+// Similarly to the situation described for [WaiterEB],
+// the `expandBuffer(..)` procedure cannot distinguish
+// whether sender or receiver was stored in the cell when
+// its state is `INTERRUPTED`. Thus, it updates the state
+// to `INTERRUPTED_EB`, informing the possibly upcoming
+// receiver that it should complete the `expandBuffer(..)`
+// procedure if the cancelled waiter stored in the cell
+// was sender.
+@SharedImmutable
+private val INTERRUPTED_EB = Symbol("INTERRUPTED_EB")
 // Indicates that the channel is already closed,
 // and no more operation should not touch this cell.
 @SharedImmutable
@@ -1774,7 +1821,17 @@ private inline fun constructSendersAndCloseStatus(counter: Long, closeStatus: In
     (closeStatus.toLong() shl CLOSE_STATUS_SHIFT) + counter
 
 /*
+  As [BufferedChannel.invokeOnClose] can be invoked concurrently
+  with channel closing, we have to synchronize them. These two
+  markers help with the synchronization. The resulting
+  [BufferedChannel.closeHandler] state diagram is presented below:
 
+    +------+ install handler +---------+  close  +---------+
+    | null |---------------->| handler |-------->| INVOKED |
+    +------+                 +---------+         +---------+
+       |             +--------+
+       +------------>| CLOSED |
+           close     +--------+
  */
 @SharedImmutable
 private val CLOSE_HANDLER_CLOSED = Symbol("CLOSE_HANDLER_CLOSED")

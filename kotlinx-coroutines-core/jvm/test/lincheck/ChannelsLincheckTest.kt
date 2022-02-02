@@ -46,23 +46,39 @@ class Buffered2BroadcastChannelLincheckTest : ChannelLincheckTestBaseWithoutOnSe
 )
 class SequentialBuffered2Channel : SequentialIntChannelBase(2)
 
-class UnlimitedChannelLincheckTest : ChannelLincheckTestBase(
+class UnlimitedChannelLincheckTest : ChannelLincheckTestBaseAllLinearizable(
     c = Channel(UNLIMITED),
     sequentialSpecification = SequentialUnlimitedChannel::class.java
 )
 class SequentialUnlimitedChannel : SequentialIntChannelBase(UNLIMITED)
 
-class ConflatedChannelLincheckTest : ChannelLincheckTestBase(
+class ConflatedChannelLincheckTest : ChannelLincheckTestBaseAllLinearizable(
     c = Channel(CONFLATED),
     sequentialSpecification = SequentialConflatedChannel::class.java,
     obstructionFree = false
 )
-class ConflatedBroadcastChannelLincheckTest : ChannelLincheckTestBase(
+class ConflatedBroadcastChannelLincheckTest : ChannelLincheckTestBaseAllLinearizable(
     c = ChannelViaBroadcast(ConflatedBroadcastChannel()),
     sequentialSpecification = SequentialConflatedChannel::class.java,
     obstructionFree = false
-)
+) {
+    @Operation
+    override fun trySend(value: Int) = super.trySend(value)
+}
 class SequentialConflatedChannel : SequentialIntChannelBase(CONFLATED)
+
+abstract class ChannelLincheckTestBaseAllLinearizable(
+    c: Channel<Int>,
+    sequentialSpecification: Class<*>,
+    obstructionFree: Boolean = true
+) : ChannelLincheckTestBase(c, sequentialSpecification, obstructionFree) {
+    @Operation
+    override fun trySend(value: Int) = super.trySend(value)
+    @Operation
+    override fun isClosedForReceive() = super.isClosedForReceive()
+    @Operation
+    override fun isEmpty() = super.isEmpty()
+}
 
 abstract class ChannelLincheckTestBase(
     c: Channel<Int>,
@@ -96,7 +112,7 @@ abstract class ChannelLincheckTestBaseWithoutOnSend(
 
     // @Operation TODO: `trySend()` is not linearizable as it can fail due to postponed buffer expansion
     //            TODO: or make a rendezvous with `tryReceive`, such an elimination is disallowed
-    fun trySend(@Param(name = "value") value: Int): Any = c.trySend(value)
+    open fun trySend(@Param(name = "value") value: Int): Any = c.trySend(value)
         .onSuccess { return true }
         .onFailure {
             return if (it is NumberedCancellationException) it.testResult
@@ -134,14 +150,14 @@ abstract class ChannelLincheckTestBaseWithoutOnSend(
     @Operation(causesBlocking = true)
     fun cancel(@Param(name = "closeToken") token: Int) = c.cancel(NumberedCancellationException(token))
 
-    // @Operation TODO not linearizable :(
-    fun isClosedForReceive() = c.isClosedForReceive
+    // @Operation TODO not linearizable for buffered channel :(
+    open fun isClosedForReceive() = c.isClosedForReceive
 
     @Operation
     fun isClosedForSend() = c.isClosedForSend
 
-    // @Operation TODO not linearizable :(
-    fun isEmpty() = c.isEmpty
+    // @Operation TODO not linearizable for buffered channel :(
+    open fun isEmpty() = c.isEmpty
 
     @StateRepresentation
     fun state() = c.toString()

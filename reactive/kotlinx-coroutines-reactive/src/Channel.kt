@@ -39,7 +39,7 @@ private class SubscriptionChannel<T>(
     // can be negative if we have receivers, but no subscription yet
     private val _requested = atomic(0)
 
-    // --------------------- AbstractChannel overrides -------------------------------
+    // --------------------- BufferedChannel overrides -------------------------------
     @Suppress("CANNOT_OVERRIDE_INVISIBLE_MEMBER")
     override fun onReceiveEnqueued() {
         _requested.loop { wasRequested ->
