@@ -28,6 +28,16 @@ public class CoroutineInfo internal constructor(delegate: DebugCoroutineInfo) {
 
     private val creationPlaceThrowable: Throwable? = delegate.creationPlaceThrowable
     /**
+     * [Coroutine id] unique identificator of the coroutine
+     */
+    public val id: Long = delegate.sequenceNumber
+
+    /**
+     * [Thread] on which the coroutine is running
+     */
+    public val lastObservedThread: Thread? = delegate.lastObservedThread
+
+    /**
      * [Job] associated with a current coroutine or null.
      * May be later used in [DebugProbes.printJob].
      */
