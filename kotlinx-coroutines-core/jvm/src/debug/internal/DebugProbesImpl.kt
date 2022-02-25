@@ -7,6 +7,7 @@ package kotlinx.coroutines.debug.internal
 import kotlinx.atomicfu.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.internal.*
+import kotlinx.coroutines.internal.CoroutineStackFrame
 import kotlinx.coroutines.internal.ScopeCoroutine
 import java.io.*
 import java.lang.StackTraceElement
@@ -15,7 +16,6 @@ import java.util.concurrent.locks.*
 import kotlin.collections.ArrayList
 import kotlin.concurrent.*
 import kotlin.coroutines.*
-import kotlin.coroutines.jvm.internal.CoroutineStackFrame
 import kotlin.synchronized
 import kotlinx.coroutines.internal.artificialFrame as createArtificialFrame // IDEA bug workaround
 
@@ -51,6 +51,16 @@ internal object DebugProbesImpl {
 
     public var sanitizeStackTraces: Boolean = true
     public var enableCreationStackTraces: Boolean = true
+
+    /**
+     * when [enableCreationStackTraces] and this mode enabled,
+     * instead of instant computations of coroutines creation stack traces,
+     * instance of [Throwable] whose stack trace represents coroutine creation, will be stored
+     * for delayed computation of it (when you access [kotlinx.coroutines.debug.CoroutineInfo.getCreationStackTrace])
+     *
+     * enabling of this flag may increase performance of coroutines dumping
+     */
+    public var delayedCreationStackTraces: Boolean = false
 
     /*
      * Substitute for service loader, DI between core and debug modules.
@@ -492,22 +502,30 @@ internal object DebugProbesImpl {
          * even more verbose (it will attach coroutine creation stacktrace to all exceptions),
          * and then using CoroutineOwner completion as unique identifier of coroutineSuspended/resumed calls.
          */
-        val frame = if (enableCreationStackTraces) {
+        val frame = if (enableCreationStackTraces && !delayedCreationStackTraces) {
             sanitizeStackTrace(Exception()).toStackTraceFrame()
         } else {
             null
         }
-        return createOwner(completion, frame)
+
+        val throwable = if (enableCreationStackTraces && delayedCreationStackTraces) {
+            Exception()
+        } else null
+
+        return createOwner(completion, frame, throwable)
     }
+
+    internal fun getCoroutinesStackTraceFrame(throwable: Throwable): StackTraceFrame? =
+        sanitizeStackTrace(throwable).toStackTraceFrame()
 
     private fun List<StackTraceElement>.toStackTraceFrame(): StackTraceFrame? =
         foldRight<StackTraceElement, StackTraceFrame?>(null) { frame, acc ->
             StackTraceFrame(acc, frame)
         }
 
-    private fun <T> createOwner(completion: Continuation<T>, frame: StackTraceFrame?): Continuation<T> {
+    private fun <T> createOwner(completion: Continuation<T>, frame: StackTraceFrame?, creationPlaceThrowable: Throwable?): Continuation<T> {
         if (!isInstalled) return completion
-        val info = DebugCoroutineInfoImpl(completion.context, frame, sequenceNumber.incrementAndGet())
+        val info = DebugCoroutineInfoImpl(completion.context, frame, creationPlaceThrowable, sequenceNumber.incrementAndGet())
         val owner = CoroutineOwner(completion, info, frame)
         capturedCoroutinesMap[owner] = true
         if (!isInstalled) capturedCoroutinesMap.clear()

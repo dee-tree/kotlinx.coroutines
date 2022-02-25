@@ -27,4 +27,5 @@ internal class DebugCoroutineInfo(
     public val lastObservedFrame: CoroutineStackFrame? = source.lastObservedFrame // field is used as of 1.4-M3
     @get:JvmName("lastObservedStackTrace") // method with this name is used as of 1.4-M3
     public val lastObservedStackTrace: List<StackTraceElement> = source.lastObservedStackTrace()
+    public val creationPlaceThrowable: Throwable? = source.creationPlaceThrowable
 }

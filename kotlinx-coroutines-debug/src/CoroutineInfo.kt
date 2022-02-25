@@ -5,6 +5,7 @@
 package kotlinx.coroutines.debug
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.debug.DebugProbes.toCoroutinesStackTraceFrame
 import kotlinx.coroutines.debug.internal.*
 import kotlin.coroutines.*
 import kotlin.coroutines.jvm.internal.*
@@ -26,6 +27,7 @@ public class CoroutineInfo internal constructor(delegate: DebugCoroutineInfo) {
 
     private val creationStackBottom: CoroutineStackFrame? = delegate.creationStackBottom
 
+    private val creationPlaceThrowable: Throwable? = delegate.creationPlaceThrowable
     /**
      * [Job] associated with a current coroutine or null.
      * May be later used in [DebugProbes.printJob].
@@ -56,7 +58,7 @@ public class CoroutineInfo internal constructor(delegate: DebugCoroutineInfo) {
     }
 
     private fun creationStackTrace(): List<StackTraceElement> {
-        val bottom = creationStackBottom ?: return emptyList()
+        val bottom = creationStackBottom ?: creationPlaceThrowable?.toCoroutinesStackTraceFrame() ?: return emptyList()
         // Skip "Coroutine creation stacktrace" frame
         return sequence<StackTraceElement> { yieldFrames(bottom.callerFrame) }.toList()
     }
