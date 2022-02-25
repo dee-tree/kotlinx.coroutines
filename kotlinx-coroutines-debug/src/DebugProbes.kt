@@ -8,9 +8,11 @@ package kotlinx.coroutines.debug
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.debug.internal.*
+import kotlinx.coroutines.debug.internal.DebugProbesImpl.enableCreationStackTraces
 import java.io.*
 import java.lang.management.*
 import kotlin.coroutines.*
+import kotlin.coroutines.jvm.internal.CoroutineStackFrame
 
 /**
  * Debug probes support.
@@ -57,6 +59,19 @@ public object DebugProbes {
         get() = DebugProbesImpl.enableCreationStackTraces
         set(value) {
             DebugProbesImpl.enableCreationStackTraces = value
+        }
+
+    /**
+     * when [enableCreationStackTraces] and this mode enabled,
+     * instead of instant computations of a coroutine creation stack trace,
+     * it will be calculated only when you access [kotlinx.coroutines.debug.CoroutineInfo.getCreationStackTrace]
+     *
+     * enabling of this flag may increase performance of coroutines dumping
+     */
+    public var delayedCreationStackTraces: Boolean
+        get() = DebugProbesImpl.delayedCreationStackTraces
+        set(value) {
+            DebugProbesImpl.delayedCreationStackTraces = value
         }
 
     /**
@@ -142,4 +157,7 @@ public object DebugProbes {
      * ```
      */
     public fun dumpCoroutines(out: PrintStream = System.out): Unit = DebugProbesImpl.dumpCoroutines(out)
+
+    internal fun Throwable.toCoroutinesStackTraceFrame(): CoroutineStackFrame? =
+        DebugProbesImpl.getCoroutinesStackTraceFrame(this)
 }
