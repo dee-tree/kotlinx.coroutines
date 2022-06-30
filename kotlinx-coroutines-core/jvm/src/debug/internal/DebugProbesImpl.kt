@@ -53,14 +53,18 @@ internal object DebugProbesImpl {
     public var enableCreationStackTraces: Boolean = true
 
     /**
+     * This mode allows to increase performance of working with coroutines dump and their creation
+     *
      * when [enableCreationStackTraces] and this mode enabled,
+     * coroutines creation stack traces will be calculated lazily.
      * instead of instant computations of coroutines creation stack traces,
      * instance of [Throwable] whose stack trace represents coroutine creation, will be stored
-     * for delayed computation of it (when you access [kotlinx.coroutines.debug.CoroutineInfo.getCreationStackTrace])
+     * for delayed computation of it (when you access [kotlinx.coroutines.debug.CoroutineInfo.getCreationStackTrace]).
+     * Also, frame for coroutineOwner will be null.
+     * Incompatible with debugger
      *
-     * enabling of this flag may increase performance of coroutines dumping
      */
-    public var delayedCreationStackTraces: Boolean = false
+    public var lazyCreationStackTraces: Boolean = false
 
     /*
      * Substitute for service loader, DI between core and debug modules.
@@ -502,13 +506,13 @@ internal object DebugProbesImpl {
          * even more verbose (it will attach coroutine creation stacktrace to all exceptions),
          * and then using CoroutineOwner completion as unique identifier of coroutineSuspended/resumed calls.
          */
-        val frame = if (enableCreationStackTraces && !delayedCreationStackTraces) {
-            sanitizeStackTrace(Exception()).toStackTraceFrame()
+        val frame = if (enableCreationStackTraces && !lazyCreationStackTraces) {
+            getCoroutinesStackTraceFrame(Exception())
         } else {
             null
         }
 
-        val throwable = if (enableCreationStackTraces && delayedCreationStackTraces) {
+        val throwable = if (enableCreationStackTraces && lazyCreationStackTraces) {
             Exception()
         } else null
 
