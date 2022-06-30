@@ -62,16 +62,20 @@ public object DebugProbes {
         }
 
     /**
-     * when [enableCreationStackTraces] and this mode enabled,
-     * instead of instant computations of a coroutine creation stack trace,
-     * it will be calculated only when you access [kotlinx.coroutines.debug.CoroutineInfo.getCreationStackTrace]
+     * This mode allows to increase performance of working with coroutines dump and their creation
      *
-     * enabling of this flag may increase performance of coroutines dumping
+     * when [enableCreationStackTraces] and this mode enabled,
+     * coroutines creation stack traces will be calculated lazily.
+     * instead of instant computations of coroutines creation stack traces,
+     * instance of [Throwable] whose stack trace represents coroutine creation, will be stored
+     * for delayed computation of it (when you access [kotlinx.coroutines.debug.CoroutineInfo.getCreationStackTrace]).
+     * Also, frame for coroutineOwner will be null.
+     * Incompatible with debugger
      */
-    public var delayedCreationStackTraces: Boolean
-        get() = DebugProbesImpl.delayedCreationStackTraces
+    public var lazyCreationStackTraces: Boolean
+        get() = DebugProbesImpl.lazyCreationStackTraces
         set(value) {
-            DebugProbesImpl.delayedCreationStackTraces = value
+            DebugProbesImpl.lazyCreationStackTraces = value
         }
 
     /**
@@ -158,6 +162,7 @@ public object DebugProbes {
      */
     public fun dumpCoroutines(out: PrintStream = System.out): Unit = DebugProbesImpl.dumpCoroutines(out)
 
-    internal fun Throwable.toCoroutinesStackTraceFrame(): CoroutineStackFrame? =
-        DebugProbesImpl.getCoroutinesStackTraceFrame(this)
+    internal fun Throwable.toCoroutinesStackTraceFrame(): CoroutineStackFrame? {
+        return DebugProbesImpl.getCoroutinesStackTraceFrame(this)
+    }
 }
