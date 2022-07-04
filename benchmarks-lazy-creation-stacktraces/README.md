@@ -1,28 +1,36 @@
 # Benchmarks of DebugProbes dump coroutines
 
 ### Ah?
+
 When `DebugProbes` **enabled**, `DebugProbes.dumpCoroutinesInfo()` catches info about all living coroutines.
 Suppose that `DebugProbes.enableCreationStackTraces == true`, then each coroutine creation 
 triggers stacktrace extracting from `Exception`. This operation is so *hard*, 
 therefore we can optimize it for coroutines dumping usecase by 
 storing Exception on coroutine creation and **lazily** extraction of stacktrace
 on `CoroutineInfo.creationStackTrace` request. We can achieve it using `DebugProbes.lazyCreationStackTraces` mode.
-<br/>
+
 ---
+
 #### ATTENTION
+
 **When `DebugProbes.lazyCreationStackTraces` enabled, creation stacktraces 
 won't be passed to `CoroutineOwner` and *debugger*, but only for `CoroutineInfo`**.
+
 ---
+
 ### What's measured?
+
 1. `BenchmarkCoroutineCreation` measures coroutines creation (including `kotlinx.coroutines.debug.internal#probeCoroutineCreated`) time on different modes of `DebugProbes` enabled
 2. 'BenchmarkOnDumpCoroutines' measures execution time of `DebugProbes.dumpCoroutinesInfo()` and/or getting access to `CoroutineInfo.creationStackTrace`
 
 ### Measurement profiles:
+
 1. `originallib` is default measurement profile based on official `1.6.0` coroutines 
 2. `patchedlib` is a profile based on optimized (via lazy mode) computation of coroutines creation stacktraces with `DebugProbes`
 
 
 ### Measurement modes:
+
 `getCreationStackTrace` is for `OnDump`-benchmarks used for call creationStackTrace after receiving `CoroutineInfo` via *dump*.
 
 * `NO_PROBES` - mode with disabled DebugProbes
@@ -40,11 +48,14 @@ Modes, specific for `patchedlib` profile:
 ---
 
 ### How to run?
+
 * `patchedlib` profile: `gradle :benchmarks-lazy-creation-stacktraces:jmhRun -Ppatchedlib`
 * `originallib` profile: `gradle :benchmarks-lazy-creation-stacktraces:jmhRun`
+
 ---
 
 ### Benchmark results
+
 * On CPU: Intel® Core™ i7-4790 × 8
 * On GPU: Mesa Intel® HD Graphics 4600
 * Under Arch x64, GNOME
