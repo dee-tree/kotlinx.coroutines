@@ -216,6 +216,7 @@ if (build_snapshot_train) {
 configure(subprojects.findAll {
     !sourceless.contains(it.name) && !isMultiplatform(it) &&
             it.name != "benchmarks" &&
+            it.name != "benchmarks-lazy-creation-stacktraces" &&
             it.name != "example-frontend-js"
 }) {
     // Pure JS and pure MPP doesn't have this notion and are configured separately

@@ -30,7 +30,8 @@ def prop = System.getProperty("build_snapshot_train")
 ext.build_snapshot_train = prop != null && prop != ""
 // ---------------------------
 
-include('benchmarks')
+include 'benchmarks'
+include 'benchmarks-lazy-creation-stacktraces'
 
 include "kotlinx-coroutines-core"
 
@@ -61,3 +62,4 @@ if (!build_snapshot_train) {
 }
 
 module('integration-testing')
+
