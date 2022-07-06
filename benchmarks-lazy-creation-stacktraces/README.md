@@ -1,56 +1,62 @@
-# Benchmarks of DebugProbes dump coroutines
+# Benchmarks of DebugProbes [lazy] coroutine dump performance
 
-### Ah?
+## Huh? What's the point?
 
-When `DebugProbes` **enabled**, `DebugProbes.dumpCoroutinesInfo()` catches info about all living coroutines.
-Suppose that `DebugProbes.enableCreationStackTraces == true`, then each coroutine creation 
-triggers stacktrace extracting from `Exception`. This operation is so *hard*, 
-therefore we can optimize it for coroutines dumping usecase by 
-storing Exception on coroutine creation and **lazily** extraction of stacktrace
-on `CoroutineInfo.creationStackTrace` request. We can achieve it using `DebugProbes.lazyCreationStackTraces` mode.
+When `DebugProbes` are enabled, `DebugProbes.dumpCoroutinesInfo()` collects information about *all active* coroutines, including their stacktraces.
+This is implemented as follows: every coroutine creation creates an `Exception` and extracts its stacktrace from it *eagerly* via the `getStackTrace()` function.
+This operation [is known to be *very slow*](https://stackoverflow.com/a/26122232), and if one does not need the stacktraces for all coroutines or they can offload the stacktrace extraction to a separate thread, we can improve the performance by storing only the `Exception` on coroutine creation and *lazily* extracting the stacktrace when needed in `CoroutineInfo.creationStackTrace`.
 
----
-
-#### ATTENTION
-
-**When `DebugProbes.lazyCreationStackTraces` enabled, creation stacktraces 
-won't be passed to `CoroutineOwner` and *debugger*, but only for `CoroutineInfo`**.
+We implemented this optimization in the new `DebugProbes.lazyCreationStackTraces` mode.
+These benchmarks attempt to measure its improvement in performance.
 
 ---
 
-### What's measured?
+### IMPORTANT
 
-1. `BenchmarkCoroutineCreation` measures coroutines creation (including `kotlinx.coroutines.debug.internal#probeCoroutineCreated`) time on different modes of `DebugProbes` enabled
-2. 'BenchmarkOnDumpCoroutines' measures execution time of `DebugProbes.dumpCoroutinesInfo()` and/or getting access to `CoroutineInfo.creationStackTrace`
+> In the current prototype implementation, when `DebugProbes.lazyCreationStackTraces` mode is enabled, creation stacktraces are not passed to `CoroutineOwner` and to the debugger, they are available only via `CoroutineInfo`.
 
-### Measurement profiles:
+---
 
-1. `originallib` is default measurement profile based on official `1.6.0` coroutines 
-2. `patchedlib` is a profile based on optimized (via lazy mode) computation of coroutines creation stacktraces with `DebugProbes`
+## Benchmark measurements
 
+1. `BenchmarkCoroutineCreation` measures coroutines creation time (including `kotlinx.coroutines.debug.internal#probeCoroutineCreated`) with different modes of `DebugProbes` enabled.
+2. `BenchmarkOnDumpCoroutines` measures execution time of `DebugProbes.dumpCoroutinesInfo()` and/or getting access to `CoroutineInfo.creationStackTrace` with different modes of `DebugProbes` enabled.
 
-### Measurement modes:
+## Measurement profiles
 
-`getCreationStackTrace` is for `OnDump`-benchmarks used for call creationStackTrace after receiving `CoroutineInfo` via *dump*.
+1. `originallib` is the default measurement profile based on the official `1.6.0` coroutine library
+2. `patchedlib` is the profile based on our optimized lazy computation of coroutine creation stacktraces
 
+## Measurement modes
+
+Regular modes:
 * `NO_PROBES` - mode with disabled DebugProbes
-* `DEFAULT` - mode with enabled only DebugProbes
-* `CREATION_ST (C)` - mode with enabled DebugProbes and enabled creation stack traces
-* `SANITIZE_ST (S)` - mode with enabled DebugProbes and enabled sanitizing stack traces
+* `DEFAULT` - mode with enabled DebugProbes without creation stack traces
+* `CREATION_ST (C)` - mode with enabled DebugProbes and with creation stack traces
+* `SANITIZE_ST (S)` - mode with enabled DebugProbes and with sanitizing stack traces (makes sense only together with `CREATION_ST` or `LAZY_CREATION_ST`)
 * `C_S` = `CREATION_ST` + `SANITIZE_ST`
+
 ---
-Modes, specific for `patchedlib` profile:
-* `LAZY_CREATION_ST (L)` - mode with enabled DebugProbes and enabled lazy creation stack traces. **Only for patched lib!**
+
+Modes specific for the `patchedlib` profile:
+* `LAZY_CREATION_ST (L)` - mode with enabled DebugProbes and with lazy creation stack traces
 * `C_L` = `CREATION_ST` + `LAZY_CREATION_ST`
 * `S_L` = `SANITIZE_ST` + `LAZY_CREATION_ST`
 * `C_S_L` = `CREATION_ST` + `SANITIZE_ST` + `LAZY_CREATION_ST`
 
 ---
 
+Modes specific for dump-oriented benchmarks:
+* `getCreationStackTrace` - when `true`, forces the creation stack trace dump for `*OnDump` benchmarks after their collection
+
+---
+
 ### How to run?
 
-* `patchedlib` profile: `gradle :benchmarks-lazy-creation-stacktraces:jmhRun -Ppatchedlib`
-* `originallib` profile: `gradle :benchmarks-lazy-creation-stacktraces:jmhRun`
+* `originallib` profile:
+    > `gradle :benchmarks-lazy-creation-stacktraces:jmhRun`
+* `patchedlib` profile:
+    > `gradle :benchmarks-lazy-creation-stacktraces:jmhRun -Ppatchedlib`
 
 ---
 
@@ -58,7 +64,7 @@ Modes, specific for `patchedlib` profile:
 
 * On CPU: Intel® Core™ i7-4790 × 8
 * On GPU: Mesa Intel® HD Graphics 4600
-* Under Arch x64, GNOME
+* On Arch x64, GNOME
 
 ```
 Benchmark                                                                             (getCreationStackTrace)            (mode)    Mode     Cnt      Score      Error  Units
