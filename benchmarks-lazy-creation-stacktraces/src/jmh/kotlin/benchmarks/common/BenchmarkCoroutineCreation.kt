@@ -35,7 +35,6 @@ open class BenchmarkLaunch : BaseBenchmark() {
     override fun run(blackhole: Blackhole) {
         val job = GlobalScope.launch {
             blackhole.consume(null)
-
         }
     }
 }
