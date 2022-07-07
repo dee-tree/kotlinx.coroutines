@@ -6,7 +6,6 @@ package benchmarks.base
 
 import kotlinx.coroutines.debug.DebugProbes
 
-
 public abstract class BaseBenchmark : Base() {
 
     override fun setup() {

@@ -7,7 +7,6 @@ package benchmarks.base
 import org.openjdk.jmh.annotations.Param
 import kotlinx.coroutines.debug.DebugProbes
 
-
 public abstract class BaseBenchmark : Base() {
 
     @Param("NO_PROBES", "DEFAULT", "CREATION_ST", "SANITIZE_ST", "LAZY_CREATION_ST", "C_S", "C_L", "S_L", "C_S_L")

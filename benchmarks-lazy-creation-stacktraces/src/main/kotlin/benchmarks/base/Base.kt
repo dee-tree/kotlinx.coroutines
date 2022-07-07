@@ -18,7 +18,6 @@ public abstract class Base {
     @Param("NO_PROBES", "DEFAULT", "CREATION_ST", "SANITIZE_ST", "C_S")
     public open lateinit var mode: Modes
 
-
     @Setup(Level.Iteration)
     public open fun setup(): Unit = Unit
 
@@ -37,10 +36,11 @@ public abstract class Base {
 
 /**
  * NO_PROBES - mode with disabled DebugProbes
- * DEFAULT - mode with enabled only DebugProbes
- * CREATION_ST (C) - mode with enabled DebugProbes and enabled creation stack traces
- * SANITIZE_ST (S) - mode with enabled DebugProbes and enabled sanitizing stack traces
- * LAZY_CREATION_ST (L) - mode with enabled DebugProbes and enabled lazy creation stack traces. **Only for patched lib!**
+ * DEFAULT - mode with enabled DebugProbes without creation stack traces
+ * CREATION_ST (C) - mode with enabled DebugProbes and with creation stack traces
+ * SANITIZE_ST (S) - mode with enabled DebugProbes and with sanitizing stack traces
+ *                   (makes sense only together with CREATION_ST or LAZY_CREATION_ST)
+ * LAZY_CREATION_ST (L)` - mode with enabled DebugProbes and with lazy creation stack traces
  * C_S = CREATION_ST + SANITIZE_ST
  * C_L = CREATION_ST + LAZY_CREATION_ST
  * S_L = SANITIZE_ST + LAZY_CREATION_ST
@@ -70,4 +70,4 @@ public enum class Modes(public val value: Int) {
         get() = value.isSet(3)
 }
 
-internal fun Int.isSet(bit: Int): Boolean = (this shr bit) and 1 == 1
+internal fun Int.isSet(bit: Int): Boolean = ((this shr bit) and 1) == 1

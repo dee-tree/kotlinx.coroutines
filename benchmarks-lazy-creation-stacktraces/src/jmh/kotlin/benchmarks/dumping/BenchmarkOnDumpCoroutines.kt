@@ -17,7 +17,7 @@ abstract class BenchmarkOnDumpCoroutines : BaseBenchmark() {
 
     abstract fun runJob(): Job
 
-    private var job: Job? = null
+    private lateinit var job: Job
 
     @Setup(Level.Invocation)
     fun onInvocationSetup() {
@@ -26,8 +26,8 @@ abstract class BenchmarkOnDumpCoroutines : BaseBenchmark() {
 
     @TearDown(Level.Invocation)
     fun onInvocationTearDown() {
-        if (job!!.isCompleted) throw IllegalStateException("Job cancelled before invocation tear down!")
-        job!!.cancel("benchmark invocation finished")
+        if (job.isCompleted) throw IllegalStateException("Job cancelled before invocation tear down!")
+        job.cancel("benchmark invocation finished")
     }
 
     @Param("false", "true")
