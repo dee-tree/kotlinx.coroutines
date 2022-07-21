@@ -9,6 +9,7 @@ package kotlinx.coroutines.debug
 import kotlinx.coroutines.*
 import kotlinx.coroutines.debug.internal.*
 import kotlinx.coroutines.debug.internal.DebugProbesImpl.enableCreationStackTraces
+import kotlinx.coroutines.debug.internal.DebugProbesImpl.getCoroutinesStackTraceFrame
 import java.io.*
 import java.lang.management.*
 import kotlin.coroutines.*
@@ -162,7 +163,7 @@ public object DebugProbes {
      */
     public fun dumpCoroutines(out: PrintStream = System.out): Unit = DebugProbesImpl.dumpCoroutines(out)
 
-    internal fun Throwable.toCoroutinesStackTraceFrame(): CoroutineStackFrame? {
-        return DebugProbesImpl.getCoroutinesStackTraceFrame(this)
-    }
 }
+
+internal fun Throwable.toCoroutinesStackTraceFrame(): CoroutineStackFrame? =
+    this.getCoroutinesStackTraceFrame()

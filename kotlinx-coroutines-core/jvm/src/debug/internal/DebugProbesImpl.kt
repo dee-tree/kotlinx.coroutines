@@ -500,27 +500,24 @@ internal object DebugProbesImpl {
          */
         val owner = completion.owner()
         if (owner != null) return completion
+
+        if (!enableCreationStackTraces) return createOwner(completion, null, null)
+
         /*
          * Here we replace completion with a sequence of StackTraceFrame objects
          * which represents creation stacktrace, thus making stacktrace recovery mechanism
          * even more verbose (it will attach coroutine creation stacktrace to all exceptions),
          * and then using CoroutineOwner completion as unique identifier of coroutineSuspended/resumed calls.
          */
-        val frame = if (enableCreationStackTraces && !lazyCreationStackTraces) {
-            getCoroutinesStackTraceFrame(Exception())
+        return if (lazyCreationStackTraces) {
+            createOwner(completion, null, Exception())
         } else {
-            null
+            createOwner(completion, Exception().getCoroutinesStackTraceFrame(), null)
         }
-
-        val throwable = if (enableCreationStackTraces && lazyCreationStackTraces) {
-            Exception()
-        } else null
-
-        return createOwner(completion, frame, throwable)
     }
 
-    internal fun getCoroutinesStackTraceFrame(throwable: Throwable): StackTraceFrame? =
-        sanitizeStackTrace(throwable).toStackTraceFrame()
+    internal fun Throwable.getCoroutinesStackTraceFrame(): StackTraceFrame? =
+        sanitizeStackTrace(this).toStackTraceFrame()
 
     private fun List<StackTraceElement>.toStackTraceFrame(): StackTraceFrame? =
         foldRight<StackTraceElement, StackTraceFrame?>(null) { frame, acc ->
