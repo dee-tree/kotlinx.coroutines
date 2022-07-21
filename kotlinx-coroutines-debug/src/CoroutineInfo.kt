@@ -5,7 +5,6 @@
 package kotlinx.coroutines.debug
 
 import kotlinx.coroutines.*
-import kotlinx.coroutines.debug.DebugProbes.toCoroutinesStackTraceFrame
 import kotlinx.coroutines.debug.internal.*
 import kotlin.coroutines.*
 import kotlin.coroutines.jvm.internal.*

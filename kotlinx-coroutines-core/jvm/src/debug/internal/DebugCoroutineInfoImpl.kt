@@ -22,7 +22,7 @@ internal class DebugCoroutineInfoImpl(
      * The actual reference to the coroutine is not stored here, so we keep a strong reference.
      */
     public val creationStackBottom: StackTraceFrame?,
-    internal val creationPlaceThrowable: Throwable?,
+    public val creationPlaceThrowable: Throwable?,
     @JvmField internal val sequenceNumber: Long
 ) {
     /**
@@ -71,10 +71,7 @@ internal class DebugCoroutineInfoImpl(
     }
 
     private fun creationStackTrace(): List<StackTraceElement> {
-        val bottom = creationStackBottom
-//        this commented code could slow down DebugCoroutineInfo creation
-//            ?: creationPlaceThrowable?.let { DebugProbesImpl.getCoroutinesStackTraceFrame(it) }
-            ?: return emptyList()
+        val bottom = creationStackBottom ?: return emptyList()
         // Skip "Coroutine creation stacktrace" frame
         return sequence { yieldFrames(bottom.callerFrame) }.toList()
     }
